@@ -1,5 +1,8 @@
 .venv/
 node_modules/
+# Local persistence (SQLite + JSONL tasks); do not commit
+/data/
+backend/data/
 # Accidental large dataset drops at repo root (use examples/ for small samples)
 /sft_data*.jsonl
 dist/

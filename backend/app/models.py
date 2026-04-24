@@ -24,7 +24,7 @@ class OneFilterInBatch(BaseModel):
 
 
 class ViewFilterIn(BaseModel):
-    """Scope batch / exploration to rows where ``field`` matches ``value`` or any of ``values``."""
+    """Legacy: scope batch / exploration to rows where ``field`` matches ``value`` or ``values`` (OR)."""
 
     field: str
     value: Optional[str] = None
@@ -46,10 +46,43 @@ class ViewFilterIn(BaseModel):
         return []
 
 
+class SubsetFilterIn(BaseModel):
+    """Subset: ``signature`` and/or ``stage_focus`` (active step title). AND across dimensions."""
+
+    signature: Optional[str] = None
+    signatures: Optional[list[str]] = None
+    stage_focus: Optional[str] = None
+    stage_focuses: Optional[list[str]] = None
+
+    def signature_values(self) -> list[str]:
+        if self.signatures:
+            return [str(x).strip() for x in self.signatures if x is not None and str(x).strip() != ""]
+        if self.signature is not None and str(self.signature).strip() != "":
+            return [str(self.signature).strip()]
+        return []
+
+    def stage_focus_values(self) -> list[str]:
+        if self.stage_focuses:
+            return [str(x).strip() for x in self.stage_focuses if x is not None and str(x).strip() != ""]
+        if self.stage_focus is not None and str(self.stage_focus).strip() != "":
+            return [str(self.stage_focus).strip()]
+        return []
+
+    def is_active(self) -> bool:
+        return bool(self.signature_values()) or bool(self.stage_focus_values())
+
+    def to_stored_dict(self) -> dict[str, Any]:
+        return {
+            "signatures": self.signature_values(),
+            "stage_focuses": self.stage_focus_values(),
+        }
+
+
 class ApplyFiltersBody(BaseModel):
-    """Batch filters → one new stage. Optional view_filter limits which rows are processed."""
+    """Batch filters → one new stage. Optional subset_filter or legacy view_filter limits which rows are processed."""
 
     base_stage_id: int
+    subset_filter: Optional[SubsetFilterIn] = None
     view_filter: Optional[ViewFilterIn] = None
     filters: list[OneFilterInBatch] = Field(
         min_length=1,
@@ -93,9 +126,17 @@ class DistributionView(BaseModel):
 
 
 class UploadResponse(BaseModel):
-    dataset_id: str
+    task_id: str
     stage0_count: int
     message: str = "ok"
+
+
+class TaskCreateIn(BaseModel):
+    task_name: str = "Untitled task"
+
+
+class TaskPatchIn(BaseModel):
+    task_name: str | None = None
 
 
 # --- Filter log export ---
@@ -106,9 +147,12 @@ __all__ = [
     "FilterApplyBody",
     "OneFilterInBatch",
     "ViewFilterIn",
+    "SubsetFilterIn",
     "ApplyFiltersBody",
     "StageSummaryView",
     "StageDetailView",
     "DistributionView",
     "UploadResponse",
+    "TaskCreateIn",
+    "TaskPatchIn",
 ]

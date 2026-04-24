@@ -1,11 +1,18 @@
 # Dataset Curation Workbench
 
-Web UI + FastAPI for SFT dataset curation (stages, filters, signature exploration). Data is held in memory in the API process (no database).
+Web UI + FastAPI for SFT dataset curation (stages, filters, signature exploration). Each **task** is persisted under **`DATA_DIR`** (default `./data`): SQLite metadata (`tasks.db`) plus JSONL files under `tasks/{task_id}/` (raw upload, per-stage kept/removed, filter log).
 
 ## Architecture
 
 - **Local development:** Vite dev server (e.g. port 5173) + FastAPI (port 8000). The UI calls `/api/...` on the Vite origin; Vite **proxies** `/api` to `http://127.0.0.1:8000`.
-- **Production (single URL):** one FastAPI process serves the React static build at `/` and all API routes under `/api/...` (see `scripts/start_production.sh`).
+- **Production (single URL):** one FastAPI process serves the React static build at `/` and all API routes under `/api/...` (see `scripts/start_production.sh`). The same process reads/writes **`DATA_DIR`**; use a mounted volume on PaaS so tasks survive restarts.
+
+### Environment
+
+| Variable | Purpose |
+|----------|---------|
+| `DATA_DIR` | Root for SQLite + task folders (default `./data`). |
+| `DATABASE_URL` | Optional; only **SQLite** URLs are supported today. If unset, the app uses `DATA_DIR/tasks.db`. |
 
 ## Requirements
 
@@ -61,18 +68,21 @@ The production build uses **relative** `/api` (no localhost in the client bundle
    `pip install -r backend/requirements.txt && bash scripts/build_frontend.sh`
 4. **Start command:**  
    `bash scripts/start_production.sh`
-5. Set **environment** if needed: `APP_VERSION`, `BUILD_TIME` (optional; exposed by `GET /api/version`). Render sets `PORT` automatically.
+5. Set **environment** if needed: `DATA_DIR` (e.g. `/var/data` on a persistent disk), `APP_VERSION`, `BUILD_TIME` (optional; exposed by `GET /api/version`). Render sets `PORT` automatically.
 6. Deploy and open the public URL — users only need that link; they do not run backend and frontend separately.
 
 A sample [Render Blueprint](https://render.com/docs/blueprint-spec) is in `render.yaml` (adjust names/region to match your account).
 
 ## API prefix
 
-All JSON/upload routes are under **`/api`**, for example:
+Task-scoped routes are under **`/api/tasks/...`**, for example:
 
-- `POST /api/datasets/upload`
-- `GET /api/datasets/{dataset_id}/stages`
-- `GET /api/version`
+- `POST /api/tasks` — create a task (returns `task_id`)
+- `POST /api/tasks/{task_id}/datasets/upload` — upload JSONL into that task
+- `GET /api/tasks/{task_id}/stages`
+- `POST /api/tasks/{task_id}/apply-filters`
+- `GET /api/tasks/{task_id}/export?...`
+- `GET /api/version`, `GET /api/health`, `GET /api/filters`
 
 ## Pinning versions
 

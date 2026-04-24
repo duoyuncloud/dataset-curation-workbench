@@ -90,6 +90,29 @@
   align-items: center;
   position: relative;
 }
+.timeline-node-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  max-width: 280px;
+}
+.timeline-truncate-btn {
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 4px 8px;
+  color: var(--text-sec);
+  border-color: var(--border);
+  background: transparent;
+}
+.timeline-truncate-btn:hover:not(:disabled) {
+  color: var(--err);
+  border-color: rgba(255, 59, 48, 0.45);
+}
+.timeline-truncate-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
 .timeline-connector {
   width: 32px;
   height: 1px;
@@ -428,6 +451,13 @@
   gap: 8px 12px;
   margin-bottom: 8px;
 }
+.charts-head-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: flex-end;
+  justify-content: flex-end;
+}
 .charts-stage-pick {
   display: flex;
   align-items: center;
@@ -470,6 +500,29 @@ th {
   z-index: 1;
   font-weight: 600;
   color: var(--text-sec);
+}
+th.table-sortable {
+  padding: 0;
+  vertical-align: bottom;
+}
+.th-sort-btn {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  text-align: left;
+  font: inherit;
+  font-weight: 600;
+  color: inherit;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-sec);
+}
+.th-sort-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
 }
 tr:last-child td {
   border-bottom: none;
@@ -518,6 +571,10 @@ tr:last-child td {
 
 .charts h2 {
   font-size: 16px;
+}
+.charts-refreshing {
+  opacity: 0.72;
+  transition: opacity 0.12s ease;
 }
 
 .sub-banner {
@@ -574,6 +631,64 @@ tr:last-child td {
   background: var(--bg-elevated);
   color: var(--text);
   font-size: 12px;
+}
+.filter-global-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0 12px;
+  font-size: 13px;
+}
+.filter-group-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 6px;
+}
+.filter-group-blurb {
+  margin: 0 0 8px;
+  line-height: 1.35;
+}
+.filter-block {
+  margin-bottom: 4px;
+}
+.filter-nested-config {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  margin: 4px 0 10px 22px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  font-size: 12px;
+}
+.filter-inline-num,
+.filter-inline-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-sec);
+}
+.filter-inline-num input,
+.filter-inline-select select {
+  max-width: 140px;
+  font-size: 12px;
+}
+.filter-name {
+  font-weight: 500;
+  margin-right: 6px;
+}
+.filter-id {
+  font-size: 11px;
+  color: var(--text-sec);
+  font-weight: 400;
+}
+.btn.micro {
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 6px;
 }
 .presets {
   display: flex;
@@ -768,4 +883,193 @@ tr:last-child td {
   max-width: 28rem;
   max-height: 120px;
   overflow: auto;
+}
+
+.task-home-header {
+  align-items: flex-start;
+}
+.task-home-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.task-home-sort-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 4px;
+}
+.task-home-sort-label .muted {
+  white-space: nowrap;
+}
+.task-home-sort-select {
+  min-width: 168px;
+  padding: 7px 10px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.task-home-empty {
+  margin-bottom: 20px;
+}
+.task-card-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.task-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+}
+.task-card.task-card-row {
+  flex-direction: row;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 14px 20px;
+  padding: 14px 16px;
+}
+.task-card-row-main {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.task-card-title {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+.task-card-dataset {
+  margin-top: 6px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-sec);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.task-card-meta {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 22px;
+  align-items: flex-start;
+  font-size: 13px;
+  flex: 0 1 auto;
+}
+.task-card-meta > div {
+  min-width: 4.5rem;
+}
+.task-card-meta dt {
+  margin: 0;
+  color: var(--text-sec);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.task-card-meta dd {
+  margin: 2px 0 0;
+  color: var(--text);
+}
+.task-card-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+@media (max-width: 720px) {
+  .task-card.task-card-row .task-card-btns {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+.btn.danger-outline {
+  border-color: var(--err);
+  color: var(--err);
+  background: transparent;
+}
+.btn.danger-outline:hover {
+  background: rgba(255, 59, 48, 0.12);
+  border-color: var(--err);
+}
+.task-workspace-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.task-workspace-title {
+  flex: 1;
+  min-width: 0;
+}
+.task-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.task-workspace-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  margin-top: 10px;
+}
+.task-workspace-actions .linkish {
+  margin: 0;
+}
+.task-workspace-title h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+.upload-toolbar {
+  position: relative;
+  flex-shrink: 0;
+}
+.upload-toolbar-header .upload-toolbar-btn {
+  padding: 10px 20px;
+  font-size: 15px;
+  font-weight: 600;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+}
+.upload-toolbar input[type='file'] {
+  position: absolute;
+  width: 0.1px;
+  height: 0.1px;
+  opacity: 0;
+  overflow: hidden;
+  z-index: -1;
+}
+.upload-toolbar .btn {
+  margin: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.task-back {
+  margin-bottom: 8px;
+}
+.rechart,
+.rechart-pie {
+  min-height: 220px;
+}
+.charts-compact .rechart {
+  min-height: 200px;
 }

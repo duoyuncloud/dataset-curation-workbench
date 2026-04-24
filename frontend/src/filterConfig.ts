@@ -21,20 +21,56 @@ export const FILTER_DEFAULTS: Record<string, Record<string, unknown>> = {
     max_response_chars: 2000000,
     detect_truncation: true,
   },
-  signature_extraction: {},
+  random_drop: { drop_fraction: 0.1, random_seed: 42 },
+  balance_to_mean: { group_by: 'signature', random_seed: 42 },
 };
 
 export const FILTER_GROUPS: Record<string, string[]> = {
-  core: [
-    'remove_hacking',
-    'remove_duplicates',
-    'format_validity',
-    'length_anomaly',
-  ],
-  analysis: ['signature_extraction'],
+  cleanup: ['remove_hacking', 'remove_duplicates'],
+  validity: ['format_validity', 'length_anomaly'],
+  balancing: ['random_drop', 'balance_to_mean'],
 };
 
-export const PRESETS: Record<string, { label: string; keys: string[] }> = {
+/** Group legend tooltip only */
+export const GROUP_HELP: Record<string, string> = {
+  cleanup:
+    'Clean the text: flag likely jailbreak / policy-evasion patterns, then remove duplicate question–answer pairs.',
+  validity:
+    'Validate shape: required SFT markers in the answer and reasonable length, including likely truncation.',
+  balancing:
+    'Optionally drop rows at random or downsample heavy signature or stage_focus buckets toward the mean.',
+};
+
+/** Short UI title per filter id */
+export const FILTER_LABELS: Record<string, string> = {
+  remove_hacking: 'Remove hacking',
+  remove_duplicates: 'Remove duplicates',
+  format_validity: 'Format validity',
+  length_anomaly: 'Length / truncation',
+  random_drop: 'Random drop',
+  balance_to_mean: 'Balance to mean',
+};
+
+/** Tooltip only — explain what the filter does for curators */
+export const FILTER_HELP: Record<string, string> = {
+  remove_hacking:
+    'Uses text heuristics to catch rows that look like jailbreaks, “ignore previous rules”, hidden instructions, or other attempts to manipulate the model; severity is controlled by the level setting.',
+  remove_duplicates: 'Removes exact or near-duplicate question–answer pairs so the dataset is not padded with repeats.',
+  format_validity:
+    'Checks that each kept line still contains the SFT markers you require (for example MODEL/NEW, load-inline, global kernel blocks) so every row matches your expected training format.',
+  length_anomaly: 'Flags rows where the question or answer is unusually short or long, or looks cut off mid-answer.',
+  random_drop: 'Randomly removes a configurable fraction of rows (useful for quick downsampling; seed controls repeatability).',
+  balance_to_mean:
+    'Reduces oversized buckets (by signature or stage_focus title) toward the average count. Requires at least two different values for that column in the rows you run on (a subset that only contains one signature cannot be balanced across signatures).',
+};
+
+/** Preset buttons shown in this order */
+export const PRESET_ORDER = ['basic', 'format', 'full'] as const;
+
+export const PRESETS: Record<
+  (typeof PRESET_ORDER)[number],
+  { label: string; keys: string[] }
+> = {
   basic: {
     label: 'Basic cleanup',
     keys: ['remove_hacking', 'remove_duplicates'],

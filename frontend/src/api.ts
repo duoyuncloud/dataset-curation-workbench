@@ -14,22 +14,71 @@ function apiBase(): string {
 
 const API = apiBase();
 
-/** Rows where `field` is one of `values` (OR). Use `field: "signature"` for operator family. */
-export type ViewFilter = { field: string; values: string[] };
+/** Active subset: OR within each list; AND across ``signatures`` vs ``stageFocus``. */
+export type SubsetFilter = {
+  signatures: string[];
+  stageFocus: string[];
+};
 
-export function formatViewFilterLabel(vf: ViewFilter): string {
-  if (vf.values.length === 1) return `${vf.field} = ${vf.values[0]}`;
-  return `${vf.field} ∈ {${vf.values.join(', ')}}`;
+export function emptySubset(): SubsetFilter {
+  return { signatures: [], stageFocus: [] };
+}
+
+export function subsetFilterActive(s: SubsetFilter | null | undefined): boolean {
+  if (!s) return false;
+  return s.signatures.length > 0 || s.stageFocus.length > 0;
+}
+
+export function formatSubsetFilterLabel(s: SubsetFilter): string {
+  const parts: string[] = [];
+  if (s.signatures.length)
+    parts.push(`signature ∈ {${s.signatures.join(', ')}}`);
+  if (s.stageFocus.length)
+    parts.push(`stage_focus ∈ {${s.stageFocus.join(', ')}}`);
+  return parts.join(' AND ') || 'subset';
+}
+
+export function subsetFilterToApiBody(
+  s: SubsetFilter
+): Record<string, unknown> | null {
+  if (!subsetFilterActive(s)) return null;
+  const o: Record<string, unknown> = {};
+  if (s.signatures.length === 1) o.signature = s.signatures[0];
+  else if (s.signatures.length > 1) o.signatures = [...s.signatures];
+  if (s.stageFocus.length === 1) o.stage_focus = s.stageFocus[0];
+  else if (s.stageFocus.length > 1) o.stage_focuses = [...s.stageFocus];
+  return o;
 }
 
 /**
- * API `view_filter` objects use `field` plus `value` and/or `values` (OR).
- * Used to recover a table/export filter from a stage created via “Apply” on a subset.
+ * Recover subset from stage `view_filter` JSON (new `subset_filter` or legacy `field`/`values`).
  */
-export function viewFilterFromRecord(
+export function subsetFilterFromStageRecord(
   vf: Record<string, unknown> | null | undefined
-): ViewFilter | null {
+): SubsetFilter | null {
   if (!vf || typeof vf !== 'object') return null;
+  const inner = vf.subset_filter;
+  if (inner && typeof inner === 'object') {
+    const sf = inner as Record<string, unknown>;
+    const sigs: string[] = [];
+    const sfo: string[] = [];
+    if (Array.isArray(sf.signatures)) {
+      for (const x of sf.signatures) {
+        if (x != null && String(x).trim() !== '') sigs.push(String(x).trim());
+      }
+    }
+    if (Array.isArray(sf.stage_focuses)) {
+      for (const x of sf.stage_focuses) {
+        if (x != null && String(x).trim() !== '') sfo.push(String(x).trim());
+      }
+    }
+    if (sigs.length || sfo.length) {
+      return {
+        signatures: sigs,
+        stageFocus: sfo,
+      };
+    }
+  }
   const field = vf.field;
   if (typeof field !== 'string' || field === '') return null;
   const values: string[] = [];
@@ -42,7 +91,9 @@ export function viewFilterFromRecord(
     values.push(String(vf.value));
   }
   if (values.length === 0) return null;
-  return { field, values };
+  if (field === 'signature') return { signatures: values, stageFocus: [] };
+  if (field === 'stage_focus') return { signatures: [], stageFocus: values };
+  return null;
 }
 
 export type Stage = {
@@ -67,7 +118,7 @@ export type StageDetail = Stage & {
 export type Dist = {
   signature: Record<string, number>;
   operator_family: Record<string, number>;
-  stage: Record<string, number>;
+  stage_focus: Record<string, number>;
   technique: Record<string, number>;
   problem_type?: Record<string, number>;
   source_model?: Record<string, number>;
@@ -78,7 +129,11 @@ export type Dist = {
 };
 
 export type StageViewResponse = {
-  field: string;
+  subset_filter: {
+    signatures: string[];
+    stage_focuses: string[];
+  } | null;
+  field: string | null;
   values: string[];
   value: string | null;
   total: number;
@@ -94,6 +149,17 @@ export type FilterGroupsResponse = {
   groups: Record<string, string[]>;
 };
 
+export type TaskRow = {
+  task_id: string;
+  task_name: string;
+  created_at: string;
+  updated_at: string;
+  dataset_name: string;
+  current_stage_id: number;
+  total_rows: number;
+  num_stages: number;
+};
+
 async function j<T>(r: Response | Promise<Response>): Promise<T> {
   const res = await r;
   if (!res.ok) {
@@ -103,12 +169,110 @@ async function j<T>(r: Response | Promise<Response>): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+const LIST_TASKS_TIMEOUT_MS = 45_000;
+
+function isAbortError(e: unknown): boolean {
+  return (
+    (e instanceof DOMException || e instanceof Error) &&
+    e.name === 'AbortError'
+  );
+}
+
+/** GET JSON with timeout; optional `outerSignal` abort = caller cancelled (not a timeout). */
+async function fetchJsonWithTimeout<T>(
+  url: string,
+  init: RequestInit | undefined,
+  timeoutMs: number,
+  outerSignal?: AbortSignal
+): Promise<T> {
+  const timeoutCtrl = new AbortController();
+  const t = setTimeout(() => timeoutCtrl.abort(), timeoutMs);
+  let signal: AbortSignal = timeoutCtrl.signal;
+  if (outerSignal) {
+    if (
+      typeof AbortSignal !== 'undefined' &&
+      typeof AbortSignal.any === 'function'
+    ) {
+      signal = AbortSignal.any([outerSignal, timeoutCtrl.signal]);
+    } else {
+      if (outerSignal.aborted) timeoutCtrl.abort();
+      else
+        outerSignal.addEventListener('abort', () => timeoutCtrl.abort(), {
+          once: true,
+        });
+    }
+  }
+  try {
+    return await j(
+      fetch(url, {
+        ...init,
+        signal,
+      })
+    );
+  } catch (e) {
+    if (isAbortError(e)) {
+      if (outerSignal?.aborted) throw e;
+      if (timeoutCtrl.signal.aborted) {
+        throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      }
+      throw e;
+    }
+    throw e;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+export function listTasks(signal?: AbortSignal): Promise<TaskRow[]> {
+  return fetchJsonWithTimeout<TaskRow[]>(
+    `${API}/tasks`,
+    undefined,
+    LIST_TASKS_TIMEOUT_MS,
+    signal
+  );
+}
+
+export function getTask(taskId: string): Promise<TaskRow> {
+  return j(fetch(`${API}/tasks/${encodeURIComponent(taskId)}`));
+}
+
+/** Create an empty task; then upload JSONL to `POST /tasks/{task_id}/datasets/upload`. */
+export async function createTask(taskName = 'Untitled task'): Promise<TaskRow> {
+  return j(
+    fetch(`${API}/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_name: taskName }),
+    })
+  );
+}
+
+export function patchTask(taskId: string, taskName: string): Promise<TaskRow> {
+  return j(
+    fetch(`${API}/tasks/${encodeURIComponent(taskId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_name: taskName }),
+    })
+  );
+}
+
+export function deleteTask(taskId: string): Promise<{ ok: string }> {
+  return j(
+    fetch(`${API}/tasks/${encodeURIComponent(taskId)}`, { method: 'DELETE' })
+  );
+}
+
 export async function uploadJsonl(
+  taskId: string,
   file: File
-): Promise<{ dataset_id: string; stage0_count: number }> {
+): Promise<{ task_id: string; stage0_count: number }> {
   const fd = new FormData();
   fd.append('file', file);
-  const r = await fetch(`${API}/datasets/upload`, { method: 'POST', body: fd });
+  const r = await fetch(`${API}/tasks/${encodeURIComponent(taskId)}/datasets/upload`, {
+    method: 'POST',
+    body: fd,
+  });
   if (!r.ok) {
     const t = await r.text();
     let msg = t || r.statusText;
@@ -125,7 +289,7 @@ export async function uploadJsonl(
     }
     throw new Error(msg);
   }
-  return r.json() as Promise<{ dataset_id: string; stage0_count: number }>;
+  return r.json() as Promise<{ task_id: string; stage0_count: number }>;
 }
 
 export function listFilters(): Promise<{ filters: string[] }> {
@@ -136,56 +300,86 @@ export function listFiltersGrouped(): Promise<FilterGroupsResponse> {
   return j(fetch(`${API}/filters?grouped=true`));
 }
 
-export function listStages(datasetId: string): Promise<Stage[]> {
-  return j(fetch(`${API}/datasets/${datasetId}/stages`));
+export async function listStages(taskId: string): Promise<Stage[]> {
+  const rows = (await j(fetch(`${API}/tasks/${encodeURIComponent(taskId)}/stages`))) as Stage[];
+  return rows.map((r) => ({
+    ...r,
+    stage_id: Number(r.stage_id),
+    input_count: Number(r.input_count ?? 0),
+    output_count: Number(r.output_count ?? 0),
+    removed_count: Number(r.removed_count ?? 0),
+  }));
 }
 
-export function getSummary(
-  datasetId: string,
-  stageId: number
-): Promise<StageDetail> {
-  return j(fetch(`${API}/datasets/${datasetId}/stages/${stageId}/summary`));
+export function getSummary(taskId: string, stageId: number): Promise<StageDetail> {
+  return j(fetch(`${API}/tasks/${encodeURIComponent(taskId)}/stages/${stageId}/summary`));
 }
+
+/** Server-side sort for kept-row tables; ties on signature / stage / text use ``_row_id`` ascending. */
+export type RowsSortKey =
+  | 'row'
+  | 'signature'
+  | 'stage_focus'
+  | 'question'
+  | 'response';
 
 export function getRows(
-  datasetId: string,
+  taskId: string,
   stageId: number,
   limit = 200,
-  offset = 0
+  offset = 0,
+  sort: RowsSortKey | null = 'row',
+  sortDir: 'asc' | 'desc' = 'asc'
 ): Promise<{ rows: Record<string, unknown>[]; total: number }> {
+  const q = new URLSearchParams({
+    limit: String(limit),
+    offset: String(offset),
+  });
+  if (sort) {
+    q.set('sort', sort);
+    q.set('sort_dir', sortDir);
+  }
   return j(
-    fetch(
-      `${API}/datasets/${datasetId}/stages/${stageId}/rows?limit=${limit}&offset=${offset}`
-    )
+    fetch(`${API}/tasks/${encodeURIComponent(taskId)}/stages/${stageId}/rows?${q.toString()}`)
   );
 }
 
 export function getStageView(
-  datasetId: string,
+  taskId: string,
   stageId: number,
-  view: ViewFilter,
+  subset: SubsetFilter,
   limit = 200,
-  offset = 0
+  offset = 0,
+  sort: RowsSortKey | null = 'row',
+  sortDir: 'asc' | 'desc' = 'asc'
 ): Promise<StageViewResponse> {
   const q = new URLSearchParams({
-    field: view.field,
     limit: String(limit),
     offset: String(offset),
   });
-  for (const v of view.values) {
-    q.append('values', v);
+  for (const v of subset.signatures) q.append('signature', v);
+  for (const v of subset.stageFocus) q.append('stage_focus', v);
+  if (sort) {
+    q.set('sort', sort);
+    q.set('sort_dir', sortDir);
   }
   return j(
     fetch(
-      `${API}/datasets/${datasetId}/stages/${stageId}/view?${q.toString()}`
+      `${API}/tasks/${encodeURIComponent(taskId)}/stages/${stageId}/view?${q.toString()}`
     )
   );
 }
 
-export type RemovalCategory = 'hacking' | 'duplicate' | 'length' | 'format' | 'other';
+export type RemovalCategory =
+  | 'hacking'
+  | 'duplicate'
+  | 'length'
+  | 'format'
+  | 'balancing'
+  | 'other';
 
 export function getRemovedSummary(
-  datasetId: string,
+  taskId: string,
   stageId: number
 ): Promise<{
   total: number;
@@ -194,7 +388,7 @@ export function getRemovedSummary(
   by_signature: Record<string, number>;
 }> {
   return j(
-    fetch(`${API}/datasets/${datasetId}/stages/${stageId}/removed-summary`)
+    fetch(`${API}/tasks/${encodeURIComponent(taskId)}/stages/${stageId}/removed-summary`)
   );
 }
 
@@ -205,7 +399,7 @@ export type GetRemovedOptions = {
 };
 
 export function getRemoved(
-  datasetId: string,
+  taskId: string,
   stageId: number,
   limit = 200,
   offset = 0,
@@ -228,17 +422,14 @@ export function getRemoved(
   }
   return j(
     fetch(
-      `${API}/datasets/${datasetId}/stages/${stageId}/removed-rows?${q.toString()}`
+      `${API}/tasks/${encodeURIComponent(taskId)}/stages/${stageId}/removed-rows?${q.toString()}`
     )
   );
 }
 
-export function getDistribution(
-  datasetId: string,
-  stageId: number
-): Promise<Dist> {
+export function getDistribution(taskId: string, stageId: number): Promise<Dist> {
   return j(
-    fetch(`${API}/datasets/${datasetId}/stages/${stageId}/distribution`)
+    fetch(`${API}/tasks/${encodeURIComponent(taskId)}/stages/${stageId}/distribution`)
   );
 }
 
@@ -249,13 +440,13 @@ export type SignaturesByStageRow = {
 };
 
 export function getSignaturesByStage(
-  datasetId: string
+  taskId: string
 ): Promise<{ stages: SignaturesByStageRow[] }> {
-  return j(fetch(`${API}/datasets/${datasetId}/signatures-by-stage`));
+  return j(fetch(`${API}/tasks/${encodeURIComponent(taskId)}/signatures-by-stage`));
 }
 
 export function applyFilter(
-  datasetId: string,
+  taskId: string,
   body: {
     stage_id: number;
     filter_type: string;
@@ -269,7 +460,7 @@ export function applyFilter(
   per_filter_removed_count: Record<string, number>;
 }> {
   return j(
-    fetch(`${API}/datasets/${datasetId}/apply-filter`, {
+    fetch(`${API}/tasks/${encodeURIComponent(taskId)}/apply-filter`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -277,11 +468,29 @@ export function applyFilter(
   );
 }
 
+export function truncateStagesFrom(
+  taskId: string,
+  fromStageId: number
+): Promise<{
+  task_id: string;
+  num_stages: number;
+  current_stage_id: number;
+  truncated_from: number;
+  total_rows: number;
+}> {
+  return j(
+    fetch(
+      `${API}/tasks/${encodeURIComponent(taskId)}/stages/truncate-from/${fromStageId}`,
+      { method: 'POST' }
+    )
+  );
+}
+
 export function applyFilters(
-  datasetId: string,
+  taskId: string,
   body: {
     base_stage_id: number;
-    view_filter: ViewFilter | null;
+    subset_filter: Record<string, unknown> | null;
     filters: { filter_type: string; filter_config: Record<string, unknown> }[];
   }
 ): Promise<{
@@ -294,7 +503,7 @@ export function applyFilters(
   untouched_row_count: number;
 }> {
   return j(
-    fetch(`${API}/datasets/${datasetId}/apply-filters`, {
+    fetch(`${API}/tasks/${encodeURIComponent(taskId)}/apply-filters`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -309,13 +518,16 @@ export function getVersion(): Promise<VersionInfo> {
 }
 
 export function exportUrl(
-  datasetId: string,
+  taskId: string,
   stageId: number,
   format: 'jsonl' | 'csv' | 'filter_log',
   options?: {
-    /** full = entire stage kept rows; signature = only rows matching the current table filter */
-    scope: 'full' | 'signature';
-    viewFilter: ViewFilter | null;
+    scope?: 'full' | 'signature';
+    /** Legacy export when scope=signature */
+    viewField?: string;
+    viewValues?: string[];
+    subsetOnly?: boolean;
+    subsetFilter?: SubsetFilter | null;
   }
 ): string {
   const q = new URLSearchParams({
@@ -323,16 +535,27 @@ export function exportUrl(
     format,
   });
   if (format === 'filter_log') {
-    return `${API}/datasets/${datasetId}/export?${q.toString()}`;
+    return `${API}/tasks/${encodeURIComponent(taskId)}/export?${q.toString()}`;
   }
-  if (options?.scope === 'signature' && options.viewFilter) {
+  const sf = options?.subsetFilter;
+  if (options?.subsetOnly && subsetFilterActive(sf ?? null)) {
+    q.set('subset_only', 'true');
+    q.set('scope', 'full');
+    for (const v of sf!.signatures) q.append('signature', v);
+    for (const v of sf!.stageFocus) q.append('stage_focus', v);
+  } else if (
+    options?.scope === 'signature' &&
+    options.viewField &&
+    options.viewValues &&
+    options.viewValues.length > 0
+  ) {
     q.set('scope', 'signature');
-    q.set('view_field', options.viewFilter.field);
-    for (const v of options.viewFilter.values) {
+    q.set('view_field', options.viewField);
+    for (const v of options.viewValues) {
       q.append('values', v);
     }
   } else {
     q.set('scope', 'full');
   }
-  return `${API}/datasets/${datasetId}/export?${q.toString()}`;
+  return `${API}/tasks/${encodeURIComponent(taskId)}/export?${q.toString()}`;
 }

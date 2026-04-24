@@ -11,7 +11,7 @@ from .hacking_filter import apply_remove_hacking
 from .dedup_filter import apply_remove_duplicates
 from .format_validity_filter import apply_format_validity
 from .length_anomaly_filter import apply_length_anomaly
-from .signature_extraction import apply_signature_extraction
+from .distribution_filters import apply_balance_to_mean, apply_random_drop
 
 FilterFn = Callable[[pd.DataFrame, dict[str, Any]], FilterResult]
 
@@ -20,7 +20,8 @@ REGISTRY: dict[str, FilterFn] = {
     "remove_duplicates": apply_remove_duplicates,
     "format_validity": apply_format_validity,
     "length_anomaly": apply_length_anomaly,
-    "signature_extraction": apply_signature_extraction,
+    "random_drop": apply_random_drop,
+    "balance_to_mean": apply_balance_to_mean,
 }
 
 

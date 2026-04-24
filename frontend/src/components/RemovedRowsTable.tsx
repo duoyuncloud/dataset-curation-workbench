@@ -3,7 +3,8 @@ import { getRemoved, getRemovedSummary, type RemovalCategory, type Stage } from 
 import { PaginationBar } from './PaginationBar';
 
 type Props = {
-  datasetId: string | null;
+  taskId: string | null;
+  hasStages: boolean;
   /** Current workspace stage; syncs the “view removed in stage …” default when the timeline changes. */
   stageId: number;
   stages: Stage[];
@@ -18,6 +19,7 @@ const REASONS: { id: RemovalCategory; label: string }[] = [
   { id: 'duplicate', label: 'Duplicate' },
   { id: 'length', label: 'Length' },
   { id: 'format', label: 'Format' },
+  { id: 'balancing', label: 'Balancing' },
   { id: 'other', label: 'Other' },
 ];
 
@@ -46,7 +48,7 @@ function reasonLine(r: Record<string, unknown>): string {
   return String(r.removal_reason ?? '—');
 }
 
-export function RemovedRowsTable({ datasetId, stageId, stages }: Props) {
+export function RemovedRowsTable({ taskId, hasStages, stageId, stages }: Props) {
   const [viewStageId, setViewStageId] = useState(stageId);
   const [rows, setRows] = useState<Record<string, unknown>[]>([]);
   const [total, setTotal] = useState(0);
@@ -80,7 +82,7 @@ export function RemovedRowsTable({ datasetId, stageId, stages }: Props) {
     setAppliedReasons([]);
     setSigOpen(false);
     setReasonOpen(false);
-  }, [stageId, datasetId]);
+  }, [stageId, taskId]);
 
   const limit = 100;
   const sigKeys = Object.keys(summary?.by_signature || {})
@@ -88,12 +90,12 @@ export function RemovedRowsTable({ datasetId, stageId, stages }: Props) {
     .sort((a, b) => a.localeCompare(b));
 
   useEffect(() => {
-    if (!datasetId) {
+    if (!taskId || !hasStages) {
       setSummary(null);
       return;
     }
     let o = true;
-    getRemovedSummary(datasetId, viewStageId)
+    getRemovedSummary(taskId, viewStageId)
       .then((s) => {
         if (o)
           setSummary({ by_category: s.by_category, by_signature: s.by_signature || {} });
@@ -104,14 +106,14 @@ export function RemovedRowsTable({ datasetId, stageId, stages }: Props) {
     return () => {
       o = false;
     };
-  }, [datasetId, viewStageId]);
+  }, [taskId, hasStages, viewStageId]);
 
   useEffect(() => {
     setOffset(0);
-  }, [viewStageId, datasetId, appliedSigs, appliedReasons]);
+  }, [viewStageId, taskId, appliedSigs, appliedReasons]);
 
   useEffect(() => {
-    if (!datasetId) {
+    if (!taskId || !hasStages) {
       setRows([]);
       setTotal(0);
       return;
@@ -120,7 +122,7 @@ export function RemovedRowsTable({ datasetId, stageId, stages }: Props) {
     const opt: { reasonCategories?: RemovalCategory[]; signatures?: string[] } = {};
     if (appliedReasons.length > 0) opt.reasonCategories = appliedReasons;
     if (appliedSigs.length > 0) opt.signatures = appliedSigs;
-    getRemoved(datasetId, viewStageId, limit, offset, opt)
+    getRemoved(taskId, viewStageId, limit, offset, opt)
       .then((r) => {
         if (ok) {
           setRows(r.rows);
@@ -136,7 +138,7 @@ export function RemovedRowsTable({ datasetId, stageId, stages }: Props) {
     return () => {
       ok = false;
     };
-  }, [datasetId, viewStageId, offset, appliedSigs, appliedReasons, limit]);
+  }, [taskId, hasStages, viewStageId, offset, appliedSigs, appliedReasons, limit]);
 
   useEffect(() => {
     if (!sigOpen || !sigKeys.length) return;
@@ -203,11 +205,15 @@ export function RemovedRowsTable({ datasetId, stageId, stages }: Props) {
         Summary include all removals; the table total respects both filters.
       </p>
 
+      {!hasStages ? (
+        <p className="muted pad">Upload a JSONL dataset first to inspect removed rows by stage.</p>
+      ) : (
+        <>
       <div className="table-filter-strip">
         <button
           type="button"
           className="btn small"
-          disabled={!datasetId || !sigKeys.length}
+          disabled={!taskId || !sigKeys.length}
           onClick={() => setSigOpen((v) => !v)}
         >
           Signature {sigOpen ? '▲' : '▼'}
@@ -215,7 +221,7 @@ export function RemovedRowsTable({ datasetId, stageId, stages }: Props) {
         <button
           type="button"
           className="btn small"
-          disabled={!datasetId}
+          disabled={!taskId}
           onClick={() => setReasonOpen((v) => !v)}
         >
           Reason {reasonOpen ? '▲' : '▼'}
@@ -368,6 +374,8 @@ export function RemovedRowsTable({ datasetId, stageId, stages }: Props) {
       </div>
       {fullRow && <RemovedFullModal row={fullRow} onClose={() => setFullRow(null)} />}
       <PaginationBar total={total} limit={limit} offset={offset} onOffset={setOffset} />
+        </>
+      )}
     </div>
   );
 }

@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 # Query / filter slugs
-REMOVAL_CATEGORIES = ("hacking", "duplicate", "length", "format", "other")
+REMOVAL_CATEGORIES = ("hacking", "duplicate", "length", "format", "balancing", "other")
 
 _HACK_TOKENS = re.compile(
     r"hack|hacked|severity|hack_types",
@@ -23,6 +23,10 @@ def _split_reasons(combined: str) -> list[str]:
 
 def category_for_fragment(text: str) -> str:
     t = (text or "").lower()
+    if "random_drop" in t or t == "random_drop":
+        return "balancing"
+    if "balance_to_mean" in t or t == "balance_to_mean":
+        return "balancing"
     if "format_validity" in t or t.startswith("format_validity"):
         return "format"
     if "length_anomaly" in t:
@@ -102,6 +106,18 @@ def friendly_removal_label(row: dict[str, Any]) -> str:
             return f"Length: {reason.split('length_anomaly:', 1)[-1].strip()[:120]}"
         tail = reason.split("length_anomaly", 1)[-1].strip()[:120]
         return f"Length / truncation ({tail})" if tail else "Length / truncation"
+
+    if rlow == "random_drop" or "random_drop" in rlow:
+        dfv = row.get("drop_fraction")
+        sd = row.get("random_seed")
+        return f"Random drop (fraction={dfv}, seed={sd})"
+
+    if rlow == "balance_to_mean" or "balance_to_mean" in rlow:
+        gb = row.get("group_by") or "?"
+        gv = row.get("group_value")
+        oc = row.get("original_group_count")
+        tc = row.get("target_count")
+        return f"Balance to mean ({gb}={gv!r}: {oc} → {tc})"
 
     if reason:
         return reason[:200] + ("…" if len(reason) > 200 else "")

@@ -9,6 +9,9 @@ export default defineConfig({
       '/api': {
         target: 'http://127.0.0.1:8000',
         changeOrigin: true,
+        /** Large JSONL / slow first response; default proxy timeout is short and surfaces as "request timeout". */
+        timeout: 120_000,
+        proxyTimeout: 120_000,
       },
     },
   },

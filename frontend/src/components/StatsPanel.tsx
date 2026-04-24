@@ -1,13 +1,13 @@
-import type { StageDetail, ViewFilter } from '../api';
+import { subsetFilterActive, type StageDetail, type SubsetFilter } from '../api';
 
 type Props = {
   detail: StageDetail | null;
   /** When drilling, show subset stats from GET /view. */
   exploreSummary: Record<string, unknown> | null;
-  viewFilter: ViewFilter | null;
+  subsetFilter: SubsetFilter | null;
 };
 
-export function StatsPanel({ detail, exploreSummary, viewFilter }: Props) {
+export function StatsPanel({ detail, exploreSummary, subsetFilter }: Props) {
   if (!detail) {
     return (
       <div className="card">
@@ -16,10 +16,11 @@ export function StatsPanel({ detail, exploreSummary, viewFilter }: Props) {
       </div>
     );
   }
-  const s = viewFilter && exploreSummary ? exploreSummary : detail.summary_stats;
+  const s =
+    subsetFilterActive(subsetFilter) && exploreSummary ? exploreSummary : detail.summary_stats;
   return (
     <div className="card">
-      <h2>Stats {viewFilter ? '(exploration subset)' : ''}</h2>
+      <h2>Stats {subsetFilterActive(subsetFilter) ? '(exploration subset)' : ''}</h2>
       <dl className="stats-dl">
         <div>
           <dt>Input</dt>
@@ -47,13 +48,13 @@ export function StatsPanel({ detail, exploreSummary, viewFilter }: Props) {
             <dd>{Number(s.runtime_ms_mean).toFixed(1)}</dd>
           </div>
         )}
-        {s.affected_row_count != null && !viewFilter && (
+        {s.affected_row_count != null && !subsetFilterActive(subsetFilter) && (
           <div>
             <dt>Affected (subset op)</dt>
             <dd>{String(s.affected_row_count)}</dd>
           </div>
         )}
-        {s.untouched_row_count != null && !viewFilter && (
+        {s.untouched_row_count != null && !subsetFilterActive(subsetFilter) && (
           <div>
             <dt>Untouched (subset op)</dt>
             <dd>{String(s.untouched_row_count)}</dd>

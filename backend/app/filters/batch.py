@@ -37,6 +37,8 @@ def apply_filters_independent_batch(
     if len(df) == 0:
         return df.copy(), pd.DataFrame(), {f"{i}:{s['filter_type']}": 0 for i, s in enumerate(filters)}
 
+    # One copy shared across independent filter passes (filters must not mutate this frame in place).
+    immutable = df.copy()
     by_rid: dict[Any, dict[str, Any]] = {}
     per_filter: dict[str, int] = {}
 
@@ -46,16 +48,19 @@ def apply_filters_independent_batch(
         if not ftype:
             continue
         key = f"{i}:{ftype}"
-        res: FilterResult = apply_filter(ftype, df.copy(), fcfg)
+        res: FilterResult = apply_filter(ftype, immutable, fcfg)
         per_filter[key] = len(res.removed)
-        for _, r in res.removed.iterrows():
+        rem = res.removed
+        if len(rem) == 0:
+            continue
+        for r in rem.to_dict(orient="records"):
             rid = r.get("_row_id", r.get("row_id"))
             if rid is None or (isinstance(rid, float) and np.isnan(rid)):
                 continue
             reason = r.get("removal_reason", "")
             sreason = str(reason) if reason is not None and str(reason) != "nan" else ""
             if rid not in by_rid:
-                d = {k: v for k, v in r.to_dict().items() if k != "removal_reasons"}
+                d = {k: v for k, v in r.items() if k != "removal_reasons"}
                 by_rid[rid] = {"row": d, "reasons": []}
             if sreason and sreason not in by_rid[rid]["reasons"]:
                 by_rid[rid]["reasons"].append(sreason)
@@ -85,3 +90,25 @@ def mask_view_in(df: pd.DataFrame, field: str, values: list[str]) -> pd.Series:
 
 def mask_view(df: pd.DataFrame, field: str, value: str) -> pd.Series:
     return mask_view_in(df, field, [str(value) if value is not None else ""])
+
+
+def mask_subset_filter(
+    df: pd.DataFrame,
+    signatures: list[str],
+    stage_focuses: list[str] | None = None,
+) -> pd.Series:
+    """
+    AND across dimensions; within each dimension, OR on the value list.
+    ``stage_focuses`` filters the human step title column ``stage_focus``.
+    """
+    m = pd.Series(True, index=df.index)
+    if signatures:
+        if "signature" not in df.columns:
+            raise ValueError("signature column required for subset signature filter")
+        m &= mask_view_in(df, "signature", signatures)
+    sf = stage_focuses or []
+    if sf:
+        if "stage_focus" not in df.columns:
+            raise ValueError("stage_focus column required for subset stage_focus filter")
+        m &= mask_view_in(df, "stage_focus", sf)
+    return m

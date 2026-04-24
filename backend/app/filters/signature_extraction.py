@@ -1,7 +1,8 @@
 """
-Enrich each row: ``signature`` comes from :mod:`.signature_registration` (for now
-operator family only), ``curation_path`` = stage + excerpt, from SFT *question*
-text (Megatron-style). Heuristics; not a full operator taxonomy.
+Enrich each row: ``signature`` from :mod:`.signature_registration` (operator family),
+``stage_focus`` as the human title for the active step (Megatron ``Current Stage Plan`` when present),
+and ``curation_path`` tying focus to a short excerpt. Digits from ``Stage N`` are only used internally
+to match the plan block, not stored as ``data_stage``. Heuristics; not a full operator taxonomy.
 """
 
 from __future__ import annotations
@@ -9,15 +10,18 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from .base_filter import FilterResult
 from .signature_registration import SignatureContext, signature_registration
 
-# e.g. "You are implementing stage 3 of a multi-stage..."
-_STAGE_RE = re.compile(
-    r"(?:implementing|阶段|stage)\s*(\d+)\s*(?:\s*of|\s*\/|\s*阶段)?\s*",
-    re.I,
+# Row-level optimization stage from question text (not platform stage_0 / stage_1).
+_DATA_STAGE_RE = re.compile(r"Stage\s*(\d+)", re.I)
+# Megatron-style: "### Current Stage Plan: **Stage N: Human title**"
+_CURRENT_STAGE_PLAN_RE = re.compile(
+    r"Current Stage Plan:\s*\*\*Stage\s*(\d+)\s*:\s*([^*]+)\*\*",
+    re.I | re.DOTALL,
 )
 # “算子: X” or "Operator: X"
 _OP_LINE_RE = re.compile(
@@ -83,6 +87,48 @@ def _valid_op_family(name: str) -> bool:
     return True
 
 
+def extract_data_stage_from_question(q: str) -> str:
+    """MVP: last ``Stage\\s*(\\d+)`` match in question; else ``unknown``."""
+    t = (q or "").replace("\r\n", "\n")
+    matches = list(_DATA_STAGE_RE.finditer(t))
+    if not matches:
+        return "unknown"
+    return str(matches[-1].group(1))
+
+
+def _norm_stage_focus_title(s: str) -> str:
+    t = re.sub(r"\s+", " ", (s or "").strip())
+    if len(t) > 220:
+        t = t[:217] + "..."
+    return t
+
+
+def extract_stage_focus_from_question(q: str) -> str:
+    """
+    Short human-readable label for *what the active step is doing* (not the digit alone).
+
+    Prefer the ``Current Stage Plan`` block used in Megatron multi-stage CUDA prompts; fall back
+    to the first ``Stage N: title`` line for the active ``N`` (last ``Stage N`` in the prompt).
+    """
+    t = (q or "").replace("\r\n", "\n")
+    n = extract_data_stage_from_question(t)
+    if n == "unknown":
+        return "unknown"
+    m = _CURRENT_STAGE_PLAN_RE.search(t)
+    if m and str(m.group(1)) == str(n):
+        got = _norm_stage_focus_title(m.group(2))
+        if got:
+            return got
+    # Fallback: first "Stage N: ..." headline (curriculum list), same N
+    fb = re.compile(rf"(?:^|\s)Stage\s*{re.escape(n)}\s*:\s*([^\n(]+)", re.I)
+    m2 = fb.search(t)
+    if m2:
+        got = _norm_stage_focus_title(m2.group(1))
+        if got:
+            return got
+    return "unknown"
+
+
 def _op_family_from_text(t: str) -> str:
     """Best-effort op family: prefer nn., then first valid _OP_FAMILY_CUES match."""
     nn_m = _NN_DOT.search(t)
@@ -97,8 +143,7 @@ def _op_family_from_text(t: str) -> str:
 
 def extract_from_question(q: str) -> dict[str, str]:
     t = (q or "").replace("\r\n", "\n")
-    stage_m = _STAGE_RE.search(t)
-    stage = f"stage_{stage_m.group(1)}" if stage_m else "unknown"
+    stage_focus = extract_stage_focus_from_question(t)
     op_line = _OP_LINE_RE.search(t)
     op_line_g = (op_line.group(1).strip() if op_line else "").strip()[:120]
     raw_sig = op_line_g
@@ -119,12 +164,12 @@ def extract_from_question(q: str) -> dict[str, str]:
     short = raw_sig or fam
     if len(short) > 60:
         short = short[:57] + "..."
-    detail_path = f"{stage}::{short}" if short else stage
+    detail_path = f"{stage_focus}::{short}" if short else stage_focus
     return {
         "signature": signature,
         "operator_family": fam,
         "curation_path": detail_path,
-        "stage": stage,
+        "stage_focus": stage_focus,
         "technique": technique or "unknown",
     }
 
@@ -136,17 +181,80 @@ def _cell_q(row: pd.Series) -> str:
     return str(v)
 
 
+def _question_texts_column(df: pd.DataFrame) -> np.ndarray:
+    """Per-row question string; same precedence as ``_cell_q`` (``question`` then ``prompt``)."""
+    n = len(df)
+    if n == 0:
+        return np.array([], dtype=object)
+    if "question" in df.columns:
+        col = df["question"].to_numpy(copy=False)
+    elif "prompt" in df.columns:
+        col = df["prompt"].to_numpy(copy=False)
+    else:
+        return np.asarray([""] * n, dtype=object)
+    out = np.empty(n, dtype=object)
+    for i in range(n):
+        v = col[i]
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            out[i] = ""
+        else:
+            out[i] = str(v)
+    return out
+
+
 def enrich_dataframe_signatures(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Fill signature-related columns from question text.
+
+    Uses list accumulation + vectorized column assignment instead of per-row ``.at`` updates,
+    which is orders of magnitude slower on large uploads.
+    """
     out = df.copy()
     n = len(out)
-    for col in ("signature", "operator_family", "curation_path", "stage", "technique"):
+    for col in ("signature", "operator_family", "curation_path", "stage_focus", "technique"):
         if col not in out.columns:
             out[col] = None
+    if n == 0:
+        return out
+    texts = _question_texts_column(out)
+    sigs: list[str] = []
+    fams: list[str] = []
+    paths: list[str] = []
+    focuses: list[str] = []
+    techs: list[str] = []
     for i in range(n):
-        s = _cell_q(out.iloc[i])
-        m = extract_from_question(s)
-        for k, v in m.items():
-            out.at[out.index[i], k] = v
+        m = extract_from_question(texts[i])
+        sigs.append(m["signature"])
+        fams.append(m["operator_family"])
+        paths.append(m["curation_path"])
+        focuses.append(m["stage_focus"])
+        techs.append(m["technique"])
+    out["signature"] = sigs
+    out["operator_family"] = fams
+    out["curation_path"] = paths
+    out["stage_focus"] = focuses
+    out["technique"] = techs
+    if "stage" in out.columns:
+        out = out.drop(columns=["stage"])
+    return out
+
+
+def ensure_stage_focus_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Backfill ``stage_focus`` when missing (older JSONL on disk)."""
+    if df is None or len(df) == 0:
+        return df
+    out = df.copy()
+    if "question" not in out.columns and "prompt" not in out.columns:
+        if "stage_focus" not in out.columns:
+            out["stage_focus"] = "unknown"
+        return out
+    qcol = out["question"] if "question" in out.columns else out["prompt"]
+    computed = qcol.fillna("").astype(str).map(extract_stage_focus_from_question)
+    if "stage_focus" not in out.columns:
+        out["stage_focus"] = computed
+        return out
+    mask = out["stage_focus"].isna() | (out["stage_focus"].astype(str).str.strip() == "")
+    out.loc[mask, "stage_focus"] = computed[mask]
     return out
 
 
