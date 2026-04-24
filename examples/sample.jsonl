@@ -1,0 +1,3 @@
+{"prompt": "test a", "response": "ok", "signature": "sig1", "source_model": "m1", "runtime_ms": 10, "correctness": true, "compiled": true, "hacked": false, "problem_type": "p1", "behavior_type": "b1"}
+{"prompt": "test a", "response": "ok", "signature": "sig1", "source_model": "m1", "runtime_ms": 20, "correctness": true, "compiled": true, "hacked": false, "problem_type": "p1", "behavior_type": "b1"}
+{"prompt": "long", "response": "x", "signature": "sig2", "runtime_ms": 1000, "correctness": false}

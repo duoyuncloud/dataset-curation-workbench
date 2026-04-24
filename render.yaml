@@ -1,0 +1,12 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: dataset-curation-workbench
+    runtime: python
+    buildCommand: pip install -r backend/requirements.txt && bash scripts/build_frontend.sh
+    startCommand: bash scripts/start_production.sh
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.0"
+      - key: APP_VERSION
+        value: "0.1.0"

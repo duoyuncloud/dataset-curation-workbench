@@ -1,0 +1,56 @@
+:root {
+  /* Dark theme: black base, white text */
+  --bg: #0a0a0a;
+  --bg-muted: #000000;
+  --bg-elevated: #141414;
+  --text: #ffffff;
+  --text-sec: #a1a1a1;
+  --border: #2a2a2a;
+  --border-soft: #333333;
+  --accent: #0a84ff;
+  --err: #ff6b6b;
+  --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg-muted);
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+code,
+pre,
+textarea.config {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 12px;
+}
