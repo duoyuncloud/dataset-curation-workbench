@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { getRemoved, getRemovedSummary, type RemovalCategory, type Stage } from '../api';
 import { PaginationBar } from './PaginationBar';
+import { RichDocBlock } from './RichDocBlock';
 
 type Props = {
   taskId: string | null;
@@ -418,7 +419,7 @@ function RemovedFullModal({
             return (
               <section className="modal-block">
                 <h4 className="modal-h4">Reason (summary)</h4>
-                <pre className="modal-pre">{t.text}</pre>
+                <RichDocBlock source={t.text} />
               </section>
             );
           })()}
@@ -436,9 +437,9 @@ function RemovedFullModal({
             const t = textBlock(q);
             if (!t.has) return null;
             return (
-              <section className="modal-block">
+              <section className="modal-block modal-qa-card">
                 <h4 className="modal-h4">Question</h4>
-                <pre className="modal-pre">{t.text}</pre>
+                <RichDocBlock source={t.text} />
               </section>
             );
           })()}
@@ -446,9 +447,9 @@ function RemovedFullModal({
             const t = textBlock(a);
             if (!t.has) return null;
             return (
-              <section className="modal-block">
+              <section className="modal-block modal-qa-card">
                 <h4 className="modal-h4">Answer</h4>
-                <pre className="modal-pre">{t.text}</pre>
+                <RichDocBlock source={t.text} />
               </section>
             );
           })()}

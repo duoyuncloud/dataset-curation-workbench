@@ -850,6 +850,21 @@ tr:last-child td {
 .modal-block {
   margin-bottom: 20px;
 }
+
+/* View full — question / answer as cards */
+.modal-block.modal-qa-card {
+  padding: 14px 16px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border-soft);
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.055) 0%, rgba(20, 20, 20, 0.98) 48%, rgba(12, 12, 12, 0.99) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.modal-block.modal-qa-card .modal-h4 {
+  margin-bottom: 10px;
+}
+.modal-block.modal-qa-card .modal-rich-md {
+  margin-top: 2px;
+}
 .modal-pre {
   margin: 0;
   white-space: pre-wrap;
@@ -863,6 +878,152 @@ tr:last-child td {
   color: var(--text);
   max-height: 50vh;
   overflow: auto;
+}
+
+/* View full — rendered markdown */
+.modal-rich-md {
+  font-family: 'Source Serif 4', 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia,
+    'Times New Roman', serif;
+  font-size: 14px;
+  line-height: 1.62;
+  color: var(--text);
+  word-break: break-word;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+.modal-rich-md > *:first-child {
+  margin-top: 0;
+}
+.modal-rich-md > *:last-child {
+  margin-bottom: 0;
+}
+.modal-rich-md p {
+  margin: 0.5em 0;
+}
+.modal-rich-md h1,
+.modal-rich-md h2,
+.modal-rich-md h3,
+.modal-rich-md h4,
+.modal-rich-md h5,
+.modal-rich-md h6 {
+  margin: 0.75em 0 0.35em;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+}
+.modal-rich-md h1 {
+  font-size: 1.35em;
+}
+.modal-rich-md h2 {
+  font-size: 1.2em;
+}
+.modal-rich-md h3 {
+  font-size: 1.1em;
+}
+.modal-rich-md h4 {
+  font-size: 1em;
+}
+.modal-rich-md strong {
+  font-weight: 600;
+  color: var(--text);
+}
+.modal-rich-md em {
+  font-style: italic;
+}
+.modal-rich-md ul,
+.modal-rich-md ol {
+  margin: 0.5em 0;
+  padding-left: 1.35em;
+}
+.modal-rich-md li {
+  margin: 0.25em 0;
+}
+.modal-rich-md blockquote {
+  margin: 0.6em 0;
+  padding: 0.35em 0 0.35em 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-sec);
+}
+.modal-rich-md hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 1em 0;
+}
+.modal-rich-md a {
+  color: #7eb8ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.modal-rich-md a:hover {
+  color: #a8d4ff;
+}
+.modal-rich-md table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.6em 0;
+  font-size: 12px;
+  overflow: hidden;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+}
+.modal-rich-md th,
+.modal-rich-md td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.modal-rich-md th {
+  background: var(--bg-elevated);
+  font-weight: 600;
+}
+.modal-rich-md code {
+  font-family: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+  font-feature-settings: 'calt' 1, 'liga' 1;
+}
+.modal-rich-md :not(pre) > code {
+  font-size: 0.85em;
+  padding: 0.12em 0.45em;
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 4px;
+  font-weight: 450;
+}
+.modal-rich-md pre {
+  margin: 0.65em 0;
+  padding: 12px 14px;
+  background: #22272e;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+  max-height: 45vh;
+  /* Serif on .modal-rich-md must not leak into code blocks */
+  font-family: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Monaco, Consolas, monospace !important;
+}
+.modal-rich-md pre code {
+  display: block;
+  padding: 0;
+  margin: 0;
+  border-radius: 0;
+  font-size: 12.5px;
+  line-height: 1.62;
+  white-space: pre;
+  tab-size: 4;
+  font-weight: 400;
+  font-family: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', Menlo, Monaco, Consolas, monospace !important;
+}
+.modal-rich-md pre code span {
+  font-family: inherit !important;
+}
+/* Align with highlight.js github-dark-dimmed; avoid double padding */
+.modal-rich-md pre code.hljs {
+  padding: 0 !important;
+  overflow-x: auto;
+  background: transparent !important;
+}
+.modal-rich-md pre code:not(.hljs) {
+  color: #adbac7;
+  background: transparent;
 }
 
 .removal-bullets {

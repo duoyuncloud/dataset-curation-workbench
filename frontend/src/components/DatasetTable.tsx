@@ -10,6 +10,7 @@ import {
   type SubsetFilter,
 } from '../api';
 import { PaginationBar } from './PaginationBar';
+import { RichDocBlock } from './RichDocBlock';
 
 type Props = {
   taskId: string | null;
@@ -562,9 +563,9 @@ function KeptFullModal({
             const pb = textBlock(q);
             if (!pb.has) return null;
             return (
-              <section className="modal-block">
+              <section className="modal-block modal-qa-card">
                 <h4 className="modal-h4">Question</h4>
-                <pre className="modal-pre">{pb.text}</pre>
+                <RichDocBlock source={pb.text} />
               </section>
             );
           })()}
@@ -572,9 +573,9 @@ function KeptFullModal({
             const ab = textBlock(a);
             if (!ab.has) return null;
             return (
-              <section className="modal-block">
+              <section className="modal-block modal-qa-card">
                 <h4 className="modal-h4">Answer (response)</h4>
-                <pre className="modal-pre">{ab.text}</pre>
+                <RichDocBlock source={ab.text} />
               </section>
             );
           })()}
@@ -584,7 +585,7 @@ function KeptFullModal({
             return (
               <section key={k} className="modal-block">
                 <h4 className="modal-h4">{label}</h4>
-                <pre className="modal-pre">{t.text}</pre>
+                <RichDocBlock source={t.text} />
               </section>
             );
           })}
