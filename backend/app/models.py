@@ -47,12 +47,17 @@ class ViewFilterIn(BaseModel):
 
 
 class SubsetFilterIn(BaseModel):
-    """Subset: ``signature`` and/or ``stage_focus`` (active step title). AND across dimensions."""
+    """Subset: optional Python ``subset_mask`` plus ``signature`` / ``stage_focus`` chips (AND)."""
 
     signature: Optional[str] = None
     signatures: Optional[list[str]] = None
     stage_focus: Optional[str] = None
     stage_focuses: Optional[list[str]] = None
+    subset_script: Optional[str] = Field(
+        None,
+        description="Python defining subset_mask(df, config)->Series[bool]; True = row is in subset.",
+    )
+    subset_script_config: dict[str, Any] = Field(default_factory=dict)
 
     def signature_values(self) -> list[str]:
         if self.signatures:
@@ -69,13 +74,19 @@ class SubsetFilterIn(BaseModel):
         return []
 
     def is_active(self) -> bool:
+        if self.subset_script is not None and str(self.subset_script).strip() != "":
+            return True
         return bool(self.signature_values()) or bool(self.stage_focus_values())
 
     def to_stored_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "signatures": self.signature_values(),
             "stage_focuses": self.stage_focus_values(),
         }
+        if self.subset_script is not None and str(self.subset_script).strip() != "":
+            d["subset_script"] = self.subset_script
+            d["subset_script_config"] = dict(self.subset_script_config or {})
+        return d
 
 
 class ApplyFiltersBody(BaseModel):
@@ -88,6 +99,16 @@ class ApplyFiltersBody(BaseModel):
         min_length=1,
         description="Each filter is evaluated on the same input; kept rows must pass all.",
     )
+
+
+class StageViewPostBody(BaseModel):
+    """POST body for ``/stages/{id}/view`` when using ``subset_script`` (or large subset payloads)."""
+
+    subset_filter: SubsetFilterIn
+    limit: int = Field(default=200, le=10_000)
+    offset: int = Field(default=0, ge=0)
+    sort: Optional[str] = None
+    sort_dir: str = "asc"
 
 
 # --- Stages (serialized for API) ---
@@ -131,6 +152,12 @@ class UploadResponse(BaseModel):
     message: str = "ok"
 
 
+class LoadDatasetFromPathIn(BaseModel):
+    """Body for POST ``/tasks/{id}/datasets/load-from-path`` — path is on the API server host."""
+
+    path: str = Field(..., min_length=1, description="Absolute or relative path; relative paths resolve under DATA_DIR")
+
+
 class TaskCreateIn(BaseModel):
     task_name: str = "Untitled task"
 
@@ -153,6 +180,8 @@ __all__ = [
     "StageDetailView",
     "DistributionView",
     "UploadResponse",
+    "LoadDatasetFromPathIn",
+    "StageViewPostBody",
     "TaskCreateIn",
     "TaskPatchIn",
 ]

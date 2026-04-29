@@ -30,6 +30,9 @@ FILTER_GROUPS: dict[str, list[str]] = {
         "random_drop",
         "balance_to_mean",
     ],
+    "script": [
+        "custom_script",
+    ],
 }
 
 task_svc = TaskService()

@@ -7,13 +7,14 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
 
 from ..dataset_store import Stage
 from ..export import build_filter_log
-from ..filters.batch import apply_filters_independent_batch, mask_subset_filter, mask_view_in
+from ..filters.batch import apply_filters_independent_batch, mask_view_in
+from ..filters.subset_mask import mask_subset_from_body
 from ..filters.pipeline import apply_filter, REGISTRY
 from ..filters.signature_extraction import enrich_dataframe_signatures, ensure_stage_focus_column
 from ..models import ApplyFiltersBody, FilterApplyBody, ViewFilterIn
@@ -105,15 +106,43 @@ class TaskService:
     def _task_rel(self, task_id: str) -> str:
         return f"tasks/{task_id}"
 
+    def _allocate_unique_task_name(
+        self,
+        conn: sqlite3.Connection,
+        desired: str,
+        exclude_task_id: Optional[str],
+    ) -> str:
+        """Return ``desired`` or ``desired (2)``, ``desired (3)``, … if names already exist."""
+        base = (desired or "").strip() or "Untitled task"
+
+        def is_taken(name: str) -> bool:
+            row = conn.execute("SELECT task_id FROM tasks WHERE task_name = ?", (name,)).fetchone()
+            if row is None:
+                return False
+            if exclude_task_id and row["task_id"] == exclude_task_id:
+                return False
+            return True
+
+        if not is_taken(base):
+            return base
+        n = 2
+        while n < 100_000:
+            cand = f"{base} ({n})"
+            if not is_taken(cand):
+                return cand
+            n += 1
+        return f"{base} ({uuid.uuid4().hex[:8]})"
+
     def create_task(self, task_name: str) -> str:
         tid = str(uuid.uuid4())
         now = _utc_now()
         with self._lock:
             conn = self._conn()
             try:
+                unique_name = self._allocate_unique_task_name(conn, task_name, None)
                 conn.execute(
                     "INSERT INTO tasks (task_id, task_name, created_at, updated_at, dataset_name, current_stage_id, total_rows, num_stages) VALUES (?,?,?,?,?,?,?,?)",
-                    (tid, task_name, now, now, "", 0, 0, 0),
+                    (tid, unique_name, now, now, "", 0, 0, 0),
                 )
                 conn.commit()
             finally:
@@ -170,9 +199,10 @@ class TaskService:
         with self._lock:
             conn = self._conn()
             try:
+                unique_name = self._allocate_unique_task_name(conn, task_name, task_id)
                 cur = conn.execute(
                     "UPDATE tasks SET task_name = ?, updated_at = ? WHERE task_id = ?",
-                    (task_name, _utc_now(), task_id),
+                    (unique_name, _utc_now(), task_id),
                 )
                 conn.commit()
                 return cur.rowcount > 0
@@ -203,8 +233,19 @@ class TaskService:
         base = f"{self._task_rel(task_id)}/stages/stage_{stage_index}"
         return f"{base}/kept.jsonl", f"{base}/removed.jsonl"
 
-    def upload_raw(self, task_id: str, df: pd.DataFrame, source_name: str) -> int:
+    def upload_raw(
+        self,
+        task_id: str,
+        df: pd.DataFrame,
+        source_name: str,
+        progress: Callable[[float, str], None] | None = None,
+    ) -> int:
         """Persist raw + enriched stage 0; replaces existing stages for this task."""
+
+        def p(frac: float, msg: str) -> None:
+            if progress:
+                progress(float(max(0.0, min(1.0, frac))), msg)
+
         self.initialize()
         if df is None or len(df) == 0:
             raise ValueError("empty dataframe")
@@ -212,9 +253,11 @@ class TaskService:
             raise KeyError("task not found")
 
         raw_rel = f"{self._task_rel(task_id)}/raw/input.jsonl"
+        p(0.1, "Enriching signatures…")
         enriched = enrich_dataframe_signatures(df)
         kept_rel, removed_rel = self._stage_rel_paths(task_id, 0)
 
+        p(0.4, "Computing distributions…")
         summary, dist = compute_summary_and_distributions(enriched)
         summary["input_count"] = len(enriched)
         summary["output_count"] = len(enriched)
@@ -236,6 +279,7 @@ class TaskService:
             input_stage_id=None,
         )
 
+        p(0.55, "Writing dataset files…")
         with self._lock:
             conn = self._conn()
             try:
@@ -250,7 +294,9 @@ class TaskService:
                     if child.is_dir() and child.name.startswith("stage_"):
                         shutil.rmtree(child, ignore_errors=True)
 
+            p(0.65, "Saving raw JSONL…")
             self._storage.save_jsonl(raw_rel, df.reset_index(drop=True))
+            p(0.78, "Saving stage 0 kept rows…")
             self._storage.save_jsonl(kept_rel, enriched)
             self._storage.save_jsonl(removed_rel, pd.DataFrame())
 
@@ -275,6 +321,7 @@ class TaskService:
             finally:
                 conn.close()
             self._filter_log_write(task_id, [])
+        p(1.0, "Done")
         return len(enriched)
 
     def _persist_stage_record(
@@ -472,7 +519,16 @@ class TaskService:
             "per_filter_removed_count": pfc,
         }
 
-    def apply_batch_filters(self, task_id: str, body: ApplyFiltersBody) -> dict[str, Any]:
+    def apply_batch_filters(
+        self,
+        task_id: str,
+        body: ApplyFiltersBody,
+        progress: Callable[[float, str], None] | None = None,
+    ) -> dict[str, Any]:
+        def p(frac: float, msg: str) -> None:
+            if progress:
+                progress(float(max(0.0, min(1.0, frac))), msg)
+
         self.initialize()
         rows = self.list_stage_rows(task_id)
         if not rows:
@@ -485,17 +541,18 @@ class TaskService:
                 raise ValueError(f"unknown filter_type: {f.filter_type}")
 
         specs = [{"filter_type": f.filter_type, "filter_config": dict(f.filter_config)} for f in body.filters]
+        p(0.05, "Loading base stage…")
         base = self.load_kept(task_id, body.base_stage_id).copy()
 
         vf: dict[str, Any] | None = None
         if body.subset_filter is not None and body.subset_filter.is_active():
-            sigs = body.subset_filter.signature_values()
-            sfo = body.subset_filter.stage_focus_values()
-            m = mask_subset_filter(base, sigs, sfo)
+            p(0.08, "Building subset mask…")
+            m = mask_subset_from_body(base, body.subset_filter)
             subset = base[m].copy()
             untouched = base[~m].copy()
             vf = {"subset_filter": body.subset_filter.to_stored_dict()}
         elif body.view_filter is not None:
+            p(0.08, "Building view filter…")
             vfi = body.view_filter
             vals = vfi.mask_values()
             vf = {"field": vfi.field, "values": vals}
@@ -507,10 +564,20 @@ class TaskService:
             subset = base[m].copy()
             untouched = base[~m].copy()
         else:
+            p(0.08, "Preparing rows…")
             subset = base
             untouched = base.head(0).copy()
 
-        kept_sub, removed, pfc = apply_filters_independent_batch(subset, specs)
+        n_spec = len(specs)
+
+        def on_filter_done(idx: int, _total: int, ftype: str) -> None:
+            if n_spec <= 0:
+                return
+            frac = 0.10 + 0.75 * (idx / n_spec)
+            p(frac, f"Running filter {ftype} ({idx}/{n_spec})…")
+
+        p(0.10, f"Running {n_spec} filter{'s' if n_spec != 1 else ''}…")
+        kept_sub, removed, pfc = apply_filters_independent_batch(subset, specs, on_filter_done=on_filter_done)
         n_untouched = len(untouched)
         n_aff = len(subset)
         n_removed = len(removed)
@@ -531,7 +598,10 @@ class TaskService:
                 sf = vf["subset_filter"] or {}
                 sigs = sf.get("signatures") or []
                 sfo = sf.get("stage_focuses") or []
+                has_script = bool(str(sf.get("subset_script") or "").strip())
                 bits: list[str] = []
+                if has_script:
+                    bits.append("subset_script")
                 if sigs:
                     bits.append(f"signature∈{sigs!r}")
                 if sfo:
@@ -568,8 +638,10 @@ class TaskService:
             "filters": specs,
             "view_filter": vf,
         }
+        p(0.90, "Writing new stage to disk…")
         with self._lock:
             self._append_stage_disk_and_db(task_id, new_index, body.base_stage_id, stage, vf, log_entry)
+        p(1.0, "Done")
         return {
             "new_stage_id": new_index,
             "input_count": n_aff,

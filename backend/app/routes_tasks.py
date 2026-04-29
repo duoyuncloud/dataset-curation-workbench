@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import queue
+import threading
 from typing import Any
 
 import pandas as pd
-from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile
-from fastapi.responses import PlainTextResponse
+from fastapi import APIRouter, File, Header, HTTPException, Query, Response, UploadFile
+from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from .api_row_utils import df_to_records, removed_dataframe_paginated, sort_kept_dataframe
-from .dataset_loader import load_jsonl_from_upload_file
+from .dataset_loader import load_jsonl_from_path, load_jsonl_from_upload_file, resolve_jsonl_import_path
 from .export import export_csv, export_jsonl
 from .filters.batch import mask_subset_filter, mask_view_in
+from .filters.subset_mask import mask_subset_from_body, subset_filter_in_from_lists
 from .models import (
     ApplyFiltersBody,
     FilterApplyBody,
+    LoadDatasetFromPathIn,
     StageDetailView,
     StageSummaryView,
+    StageViewPostBody,
     TaskCreateIn,
     TaskPatchIn,
     UploadResponse,
@@ -90,6 +97,193 @@ def register_task_routes(r: APIRouter, task_svc: TaskService) -> None:
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         return UploadResponse(task_id=task_id, stage0_count=n, message="ok")
+
+    @r.post("/tasks/{task_id}/datasets/load-from-path", response_model=UploadResponse)
+    def load_dataset_from_path(task_id: str, body: LoadDatasetFromPathIn) -> UploadResponse:
+        """Load JSONL from a path on the server (same staging behavior as multipart upload)."""
+        task_svc.initialize()
+        if not task_svc.get_task(task_id):
+            raise HTTPException(404, "task not found")
+        try:
+            path = resolve_jsonl_import_path(body.path)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        try:
+            df = load_jsonl_from_path(path)
+        except OSError as e:
+            raise HTTPException(400, f"cannot read file: {e}") from e
+        except MemoryError:
+            raise HTTPException(
+                500,
+                "Not enough server memory to hold this dataset. Try a smaller file or more RAM.",
+            ) from None
+        if df is None or len(df) == 0:
+            raise HTTPException(
+                400,
+                "No valid JSON lines parsed. Check JSONL format (one JSON object per line, UTF-8).",
+            )
+        name = path.name or "dataset.jsonl"
+        try:
+            n = task_svc.upload_raw(task_id, df, name)
+        except KeyError:
+            raise HTTPException(404, "task not found") from None
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return UploadResponse(task_id=task_id, stage0_count=n, message="ok")
+
+    @r.post("/tasks/{task_id}/datasets/load-from-path-stream")
+    def load_dataset_from_path_stream(task_id: str, body: LoadDatasetFromPathIn) -> StreamingResponse:
+        """NDJSON progress while reading the file and saving stage 0 (same outcome as load-from-path)."""
+
+        task_svc.initialize()
+        if not task_svc.get_task(task_id):
+            raise HTTPException(404, "task not found")
+        try:
+            path = resolve_jsonl_import_path(body.path)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        name = path.name or "dataset.jsonl"
+
+        def generate():
+            q: queue.Queue[dict[str, Any]] = queue.Queue()
+
+            def read_progress(local_frac: float, msg: str) -> None:
+                q.put({"type": "progress", "pct": 0.05 + 0.55 * local_frac, "message": msg})
+
+            def run() -> None:
+                try:
+                    df = load_jsonl_from_path(path, on_progress=read_progress)
+                    if df is None or len(df) == 0:
+                        q.put({"type": "error", "message": "No valid JSON lines parsed."})
+                        return
+
+                    def save_progress(sf: float, sm: str) -> None:
+                        q.put({"type": "progress", "pct": 0.62 + 0.36 * sf, "message": sm})
+
+                    n = task_svc.upload_raw(task_id, df, name, progress=save_progress)
+                    q.put({"type": "done", "task_id": task_id, "stage0_count": n, "message": "ok"})
+                except OSError as e:
+                    q.put({"type": "error", "message": f"cannot read file: {e}"})
+                except MemoryError:
+                    q.put(
+                        {
+                            "type": "error",
+                            "message": "Not enough server memory to hold this dataset. Try a smaller file or more RAM.",
+                        }
+                    )
+                except ValueError as e:
+                    q.put({"type": "error", "message": str(e)})
+                except KeyError:
+                    q.put({"type": "error", "message": "task not found"})
+
+            threading.Thread(target=run, daemon=True).start()
+            while True:
+                item = q.get()
+                yield json.dumps(item, default=str) + "\n"
+                if item.get("type") in ("done", "error"):
+                    return
+
+        return StreamingResponse(
+            generate(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @r.post("/tasks/{task_id}/datasets/upload-stream")
+    async def upload_dataset_stream(
+        task_id: str,
+        file: UploadFile = File(...),
+        x_expected_size: str | None = Header(None, alias="X-Expected-Size"),
+    ) -> StreamingResponse:
+        """Multipart upload with NDJSON progress (parse + persist). Client may send ``X-Expected-Size: bytes``."""
+
+        task_svc.initialize()
+        if not task_svc.get_task(task_id):
+            raise HTTPException(404, "task not found")
+        expected = int(x_expected_size) if x_expected_size and x_expected_size.strip().isdigit() else 0
+        src_name = file.filename or "upload.jsonl"
+
+        async def gen():
+            events: asyncio.Queue[tuple[Any, ...]] = asyncio.Queue()
+
+            async def load_df_task() -> None:
+                async def cb(fr: float, msg: str) -> None:
+                    await events.put(("prog", 0.03 + 0.55 * fr, msg))
+
+                try:
+                    df = await load_jsonl_from_upload_file(
+                        file,
+                        expected_total_bytes=expected,
+                        on_progress=cb,
+                    )
+                    await events.put(("df", df))
+                except Exception as e:
+                    await events.put(("load_err", str(e)))
+
+            asyncio.create_task(load_df_task())
+            df: pd.DataFrame | None = None
+            while df is None:
+                item = await events.get()
+                if item[0] == "prog":
+                    _, pct, msg = item
+                    yield json.dumps({"type": "progress", "pct": pct, "message": msg}) + "\n"
+                elif item[0] == "df":
+                    df = item[1]
+                elif item[0] == "load_err":
+                    yield json.dumps({"type": "error", "message": item[1]}) + "\n"
+                    return
+
+            assert df is not None
+            if len(df) == 0:
+                yield json.dumps({"type": "error", "message": "No valid JSON lines parsed."}) + "\n"
+                return
+
+            loop = asyncio.get_running_loop()
+            result_q: asyncio.Queue[tuple[Any, ...]] = asyncio.Queue()
+
+            def worker() -> None:
+                try:
+
+                    def sp(sf: float, sm: str) -> None:
+                        asyncio.run_coroutine_threadsafe(
+                            result_q.put(("prog", 0.58 + 0.40 * sf, sm)),
+                            loop,
+                        )
+
+                    n = task_svc.upload_raw(task_id, df, src_name, progress=sp)
+                    asyncio.run_coroutine_threadsafe(result_q.put(("ok", n)), loop)
+                except Exception as e:
+                    asyncio.run_coroutine_threadsafe(result_q.put(("err", str(e))), loop)
+
+            threading.Thread(target=worker, daemon=True).start()
+            while True:
+                item = await result_q.get()
+                if item[0] == "prog":
+                    _, pct, msg = item
+                    yield json.dumps({"type": "progress", "pct": pct, "message": msg}) + "\n"
+                elif item[0] == "ok":
+                    n = item[1]
+                    yield (
+                        json.dumps(
+                            {
+                                "type": "done",
+                                "task_id": task_id,
+                                "stage0_count": n,
+                                "message": "ok",
+                            }
+                        )
+                        + "\n"
+                    )
+                    return
+                elif item[0] == "err":
+                    yield json.dumps({"type": "error", "message": item[1]}) + "\n"
+                    return
+
+        return StreamingResponse(
+            gen(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @r.get("/tasks/{task_id}/stages")
     def list_stages(task_id: str) -> list[StageSummaryView]:
@@ -234,7 +428,8 @@ def register_task_routes(r: APIRouter, task_svc: TaskService) -> None:
         sfo = [str(x) for x in (stage_focus or []) if x is not None and str(x).strip() != ""]
         if sigs or sfo:
             try:
-                m = mask_subset_filter(df, sigs, sfo)
+                sub_in = subset_filter_in_from_lists(sigs, sfo)
+                m = mask_subset_from_body(df, sub_in)
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
             sub = df[m]
@@ -286,6 +481,44 @@ def register_task_routes(r: APIRouter, task_svc: TaskService) -> None:
             "rows": df_to_records(sub_sorted, limit, offset),
             "limit": limit,
             "offset": offset,
+        }
+
+    @r.post("/tasks/{task_id}/stages/{stage_id}/view")
+    def stage_view_post(
+        task_id: str, stage_id: int, body: StageViewPostBody
+    ) -> dict[str, Any]:
+        """Same response as GET ``/view`` but accepts ``subset_script`` in JSON (not query params)."""
+        task_svc.initialize()
+        try:
+            df = task_svc.load_kept(task_id, stage_id)
+        except KeyError:
+            raise HTTPException(404, "stage not found") from None
+        if not body.subset_filter.is_active():
+            raise HTTPException(
+                400,
+                "subset_filter must include subset_script and/or signature / stage_focus values",
+            )
+        try:
+            m = mask_subset_from_body(df, body.subset_filter)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        sub = df[m]
+        summ, dist = compute_summary_and_distributions(sub)
+        try:
+            sub_sorted = sort_kept_dataframe(sub, body.sort, body.sort_dir)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {
+            "subset_filter": body.subset_filter.to_stored_dict(),
+            "field": None,
+            "values": [],
+            "value": None,
+            "total": len(sub_sorted),
+            "summary_stats": {**summ, "output_count": len(sub)},
+            "distributions": dist,
+            "rows": df_to_records(sub_sorted, body.limit, body.offset),
+            "limit": body.limit,
+            "offset": body.offset,
         }
 
     @r.get("/tasks/{task_id}/stages/{stage_id}/removed-summary")
@@ -501,3 +734,38 @@ def register_task_routes(r: APIRouter, task_svc: TaskService) -> None:
             raise HTTPException(404, str(e)) from e
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+
+    @r.post("/tasks/{task_id}/apply-filters-stream")
+    def apply_filters_batch_stream(task_id: str, body: ApplyFiltersBody) -> StreamingResponse:
+        """Same body as ``apply-filters``; responds with NDJSON lines (progress + done)."""
+
+        task_svc.initialize()
+        if not task_svc.get_task(task_id):
+            raise HTTPException(404, "task not found")
+
+        def generate():
+            q: queue.Queue[dict[str, Any]] = queue.Queue()
+
+            def progress(pct: float, msg: str) -> None:
+                q.put({"type": "progress", "pct": pct, "message": msg})
+
+            def run() -> None:
+                try:
+                    r = task_svc.apply_batch_filters(task_id, body, progress=progress)
+                    q.put({"type": "done", **r})
+                except Exception as e:
+                    q.put({"type": "error", "message": str(e)})
+
+            threading.Thread(target=run, daemon=True).start()
+            while True:
+                item = q.get()
+                t = item.get("type")
+                yield json.dumps(item, default=str) + "\n"
+                if t in ("done", "error"):
+                    return
+
+        return StreamingResponse(
+            generate(),
+            media_type="application/x-ndjson",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )

@@ -12,6 +12,7 @@ from .dedup_filter import apply_remove_duplicates
 from .format_validity_filter import apply_format_validity
 from .length_anomaly_filter import apply_length_anomaly
 from .distribution_filters import apply_balance_to_mean, apply_random_drop
+from .script_filter import apply_custom_script
 
 FilterFn = Callable[[pd.DataFrame, dict[str, Any]], FilterResult]
 
@@ -22,6 +23,7 @@ REGISTRY: dict[str, FilterFn] = {
     "length_anomaly": apply_length_anomaly,
     "random_drop": apply_random_drop,
     "balance_to_mean": apply_balance_to_mean,
+    "custom_script": apply_custom_script,
 }
 
 

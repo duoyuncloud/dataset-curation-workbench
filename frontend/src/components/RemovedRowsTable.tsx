@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react';
 import { getRemoved, getRemovedSummary, type RemovalCategory, type Stage } from '../api';
 import { PaginationBar } from './PaginationBar';
 import { RichDocBlock } from './RichDocBlock';
+import {
+  splitResponseForView,
+  stripSplitBoundaryTagsForView,
+  stripTableThinkingPreview,
+} from '../responseSplit';
 
 type Props = {
   taskId: string | null;
@@ -25,6 +30,7 @@ const REASONS: { id: RemovalCategory; label: string }[] = [
 ];
 
 const PREVIEW_LEN = 200;
+const PREVIEW_CELL = 150;
 
 function questionText(r: Record<string, unknown>): string {
   if (r.question == null) return '';
@@ -197,7 +203,9 @@ export function RemovedRowsTable({ taskId, hasStages, stageId, stages }: Props) 
             </select>
           </label>
         </div>
-        <span className="muted">Raw input fields are <code>question</code> and <code>response</code>.</span>
+        <span className="muted">
+          Previews use <code>question</code> and <code>response</code> (response split into Thinking / Response).
+        </span>
       </div>
       <p className="muted small">
         The workspace timeline is on <strong>{stageLabel(stageId)}</strong>; you can list removals from
@@ -338,6 +346,8 @@ export function RemovedRowsTable({ taskId, hasStages, stageId, stages }: Props) 
               <th>Signature</th>
               <th>Reason</th>
               <th>Question</th>
+              <th>Thinking</th>
+              <th>Response</th>
               <th />
             </tr>
           </thead>
@@ -345,6 +355,11 @@ export function RemovedRowsTable({ taskId, hasStages, stageId, stages }: Props) 
             {rows.map((r, i) => {
               const q = questionText(r);
               const qPrev = q.length > PREVIEW_LEN ? `${q.slice(0, PREVIEW_LEN)}…` : q;
+              const sp = splitResponseForView(String(r.response ?? ''));
+              const th = stripTableThinkingPreview(sp.thinking);
+              const ans = sp.answer;
+              const tPrev = th.length > PREVIEW_CELL ? `${th.slice(0, PREVIEW_CELL)}…` : th;
+              const aPrev = ans.length > PREVIEW_CELL ? `${ans.slice(0, PREVIEW_CELL)}…` : ans;
               return (
                 <tr key={String(r._row_id ?? i)}>
                   <td className="nowrap">{rowId(r, i, offset)}</td>
@@ -356,6 +371,12 @@ export function RemovedRowsTable({ taskId, hasStages, stageId, stages }: Props) 
                   </td>
                   <td>
                     <span className="cell-preview">{qPrev || '—'}</span>
+                  </td>
+                  <td>
+                    <span className="cell-preview cell-preview-muted">{tPrev || '—'}</span>
+                  </td>
+                  <td>
+                    <span className="cell-preview">{aPrev || '—'}</span>
                   </td>
                   <td>
                     <button type="button" className="btn small" onClick={() => setFullRow(r)}>
@@ -446,11 +467,24 @@ function RemovedFullModal({
           {(() => {
             const t = textBlock(a);
             if (!t.has) return null;
+            const sp = splitResponseForView(t.text);
+            const thinkDoc = stripSplitBoundaryTagsForView(sp.thinking);
+            const answerDoc = stripSplitBoundaryTagsForView(sp.answer);
             return (
-              <section className="modal-block modal-qa-card">
-                <h4 className="modal-h4">Answer</h4>
-                <RichDocBlock source={t.text} />
-              </section>
+              <>
+                {thinkDoc.trim() ? (
+                  <section className="modal-block modal-thinking-card">
+                    <h4 className="modal-h4">Thinking</h4>
+                    <RichDocBlock source={thinkDoc} />
+                  </section>
+                ) : null}
+                {answerDoc.trim() ? (
+                  <section className="modal-block modal-answer-card">
+                    <h4 className="modal-h4">Answer</h4>
+                    <RichDocBlock source={answerDoc} />
+                  </section>
+                ) : null}
+              </>
             );
           })()}
         </div>

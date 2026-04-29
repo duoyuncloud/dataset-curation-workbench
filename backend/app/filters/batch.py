@@ -6,7 +6,7 @@ removal_reasons lists every reason from every filter that flags the row.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pandas as pd
@@ -26,6 +26,7 @@ def _row_id_series(df: pd.DataFrame) -> pd.Series:
 def apply_filters_independent_batch(
     df: pd.DataFrame,
     filters: list[FilterSpec],
+    on_filter_done: Callable[[int, int, str], None] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, int]]:
     """
     Returns: kept_df, removed_df, per_filter_removed_count
@@ -50,6 +51,8 @@ def apply_filters_independent_batch(
         key = f"{i}:{ftype}"
         res: FilterResult = apply_filter(ftype, immutable, fcfg)
         per_filter[key] = len(res.removed)
+        if on_filter_done is not None:
+            on_filter_done(i + 1, len(filters), ftype)
         rem = res.removed
         if len(rem) == 0:
             continue

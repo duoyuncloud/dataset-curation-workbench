@@ -18,6 +18,9 @@ const API = apiBase();
 export type SubsetFilter = {
   signatures: string[];
   stageFocus: string[];
+  /** Server-side Python: ``subset_mask(df, config)`` → Series[bool], True = row is in subset */
+  subsetScript?: string;
+  subsetScriptConfig?: Record<string, unknown>;
 };
 
 export function emptySubset(): SubsetFilter {
@@ -26,11 +29,13 @@ export function emptySubset(): SubsetFilter {
 
 export function subsetFilterActive(s: SubsetFilter | null | undefined): boolean {
   if (!s) return false;
+  if (s.subsetScript != null && String(s.subsetScript).trim() !== '') return true;
   return s.signatures.length > 0 || s.stageFocus.length > 0;
 }
 
 export function formatSubsetFilterLabel(s: SubsetFilter): string {
   const parts: string[] = [];
+  if (s.subsetScript != null && String(s.subsetScript).trim() !== '') parts.push('subset_script');
   if (s.signatures.length)
     parts.push(`signature ∈ {${s.signatures.join(', ')}}`);
   if (s.stageFocus.length)
@@ -47,6 +52,10 @@ export function subsetFilterToApiBody(
   else if (s.signatures.length > 1) o.signatures = [...s.signatures];
   if (s.stageFocus.length === 1) o.stage_focus = s.stageFocus[0];
   else if (s.stageFocus.length > 1) o.stage_focuses = [...s.stageFocus];
+  if (s.subsetScript != null && String(s.subsetScript).trim() !== '') {
+    o.subset_script = s.subsetScript;
+    o.subset_script_config = s.subsetScriptConfig ?? {};
+  }
   return o;
 }
 
@@ -72,11 +81,21 @@ export function subsetFilterFromStageRecord(
         if (x != null && String(x).trim() !== '') sfo.push(String(x).trim());
       }
     }
-    if (sigs.length || sfo.length) {
-      return {
+    const script = typeof sf.subset_script === 'string' ? sf.subset_script : '';
+    const scfg =
+      sf.subset_script_config && typeof sf.subset_script_config === 'object'
+        ? (sf.subset_script_config as Record<string, unknown>)
+        : undefined;
+    if (sigs.length || sfo.length || String(script).trim() !== '') {
+      const out: SubsetFilter = {
         signatures: sigs,
         stageFocus: sfo,
       };
+      if (String(script).trim() !== '') {
+        out.subsetScript = script;
+        if (scfg) out.subsetScriptConfig = scfg;
+      }
+      return out;
     }
   }
   const field = vf.field;
@@ -263,33 +282,184 @@ export function deleteTask(taskId: string): Promise<{ ok: string }> {
   );
 }
 
+export type UploadProgressEvent =
+  | { phase: 'upload'; loaded: number; total: number }
+  | { phase: 'processing' };
+
 export async function uploadJsonl(
   taskId: string,
-  file: File
+  file: File,
+  onProgress?: (ev: UploadProgressEvent) => void
 ): Promise<{ task_id: string; stage0_count: number }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API}/tasks/${encodeURIComponent(taskId)}/datasets/upload`);
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && onProgress) {
+        onProgress({ phase: 'upload', loaded: e.loaded, total: e.total });
+      }
+    });
+    xhr.upload.addEventListener('load', () => {
+      if (onProgress) onProgress({ phase: 'processing' });
+    });
+
+    xhr.onload = () => {
+      const text = xhr.responseText || '';
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const body = JSON.parse(text) as { task_id?: string; stage0_count?: number };
+          resolve({
+            task_id: String(body.task_id ?? taskId),
+            stage0_count: Number(body.stage0_count ?? 0),
+          });
+        } catch {
+          reject(new Error('Invalid response from server'));
+        }
+        return;
+      }
+      let msg = xhr.statusText || 'Upload failed';
+      try {
+        const o = JSON.parse(text) as { detail?: string };
+        if (typeof o.detail === 'string') msg = o.detail;
+      } catch {
+        /* keep */
+      }
+      if (xhr.status === 413) {
+        reject(
+          new Error(
+            'File too large for the server (413). If you use a reverse proxy, raise its body size limit, or use streaming upload to the API directly.'
+          )
+        );
+        return;
+      }
+      reject(new Error(msg));
+    };
+    xhr.onerror = () => reject(new Error('Network error during upload'));
+    const fd = new FormData();
+    fd.append('file', file);
+    xhr.send(fd);
+  });
+}
+
+export function loadJsonlFromPath(
+  taskId: string,
+  path: string
+): Promise<{ task_id: string; stage0_count: number }> {
+  return j(
+    fetch(`${API}/tasks/${encodeURIComponent(taskId)}/datasets/load-from-path`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: path.trim() }),
+    })
+  );
+}
+
+export type DatasetImportStreamResult = {
+  task_id: string;
+  stage0_count: number;
+  message?: string;
+};
+
+async function readDatasetImportNdjson(
+  res: Response,
+  onProgress: (pct: number, message: string) => void
+): Promise<DatasetImportStreamResult> {
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || `HTTP ${res.status}`);
+  }
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('No response body');
+  const dec = new TextDecoder();
+  let buf = '';
+  let donePayload: DatasetImportStreamResult | null = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (value) buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+    for (const line of lines) {
+      const s = line.trim();
+      if (!s) continue;
+      let ev: Record<string, unknown>;
+      try {
+        ev = JSON.parse(s) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const typ = ev.type as string;
+      if (typ === 'progress') {
+        const pct = typeof ev.pct === 'number' ? ev.pct : 0;
+        const message = typeof ev.message === 'string' ? ev.message : '';
+        onProgress(pct, message);
+      } else if (typ === 'error') {
+        throw new Error(typeof ev.message === 'string' ? ev.message : 'Import failed');
+      } else if (typ === 'done') {
+        donePayload = {
+          task_id: String(ev.task_id ?? ''),
+          stage0_count: Number(ev.stage0_count ?? 0),
+          message: typeof ev.message === 'string' ? ev.message : undefined,
+        };
+      }
+    }
+    if (done) {
+      const tail = buf.trim();
+      if (tail && !donePayload) {
+        try {
+          const ev = JSON.parse(tail) as Record<string, unknown>;
+          if (ev.type === 'done') {
+            donePayload = {
+              task_id: String(ev.task_id ?? ''),
+              stage0_count: Number(ev.stage0_count ?? 0),
+              message: typeof ev.message === 'string' ? ev.message : undefined,
+            };
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      break;
+    }
+  }
+  if (!donePayload) throw new Error('Stream ended without result');
+  return donePayload;
+}
+
+/** Server path import with real progress (NDJSON). */
+export async function loadJsonlFromPathStream(
+  taskId: string,
+  path: string,
+  onProgress: (pct: number, message: string) => void
+): Promise<DatasetImportStreamResult> {
+  const res = await fetch(
+    `${API}/tasks/${encodeURIComponent(taskId)}/datasets/load-from-path-stream`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: path.trim() }),
+    }
+  );
+  return readDatasetImportNdjson(res, onProgress);
+}
+
+/** Multipart upload with server-reported parse + save progress. Sends ``X-Expected-Size`` when known. */
+export async function uploadJsonlStream(
+  taskId: string,
+  file: File,
+  onProgress: (pct: number, message: string) => void
+): Promise<DatasetImportStreamResult> {
   const fd = new FormData();
   fd.append('file', file);
-  const r = await fetch(`${API}/tasks/${encodeURIComponent(taskId)}/datasets/upload`, {
-    method: 'POST',
-    body: fd,
-  });
-  if (!r.ok) {
-    const t = await r.text();
-    let msg = t || r.statusText;
-    try {
-      const o = JSON.parse(t) as { detail?: string | { msg?: string }[] };
-      if (typeof o.detail === 'string') msg = o.detail;
-    } catch {
-      /* use raw */
+  const res = await fetch(
+    `${API}/tasks/${encodeURIComponent(taskId)}/datasets/upload-stream`,
+    {
+      method: 'POST',
+      headers: { 'X-Expected-Size': String(file.size) },
+      body: fd,
     }
-    if (r.status === 413) {
-      throw new Error(
-        'File too large for the server (413). If you use a reverse proxy, raise its body size limit, or use streaming upload to the API directly.'
-      );
-    }
-    throw new Error(msg);
-  }
-  return r.json() as Promise<{ task_id: string; stage0_count: number }>;
+  );
+  return readDatasetImportNdjson(res, onProgress);
 }
 
 export function listFilters(): Promise<{ filters: string[] }> {
@@ -321,6 +491,7 @@ export type RowsSortKey =
   | 'signature'
   | 'stage_focus'
   | 'question'
+  | 'thinking'
   | 'response';
 
 export function getRows(
@@ -353,6 +524,29 @@ export function getStageView(
   sort: RowsSortKey | null = 'row',
   sortDir: 'asc' | 'desc' = 'asc'
 ): Promise<StageViewResponse> {
+  const body = subsetFilterToApiBody(subset);
+  if (!body) {
+    return Promise.reject(new Error('subset filter required'));
+  }
+  const usePost = subset.subsetScript != null && String(subset.subsetScript).trim() !== '';
+  if (usePost) {
+    return j(
+      fetch(
+        `${API}/tasks/${encodeURIComponent(taskId)}/stages/${stageId}/view`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            subset_filter: body,
+            limit,
+            offset,
+            sort,
+            sort_dir: sortDir,
+          }),
+        }
+      )
+    );
+  }
   const q = new URLSearchParams({
     limit: String(limit),
     offset: String(offset),
@@ -486,14 +680,7 @@ export function truncateStagesFrom(
   );
 }
 
-export function applyFilters(
-  taskId: string,
-  body: {
-    base_stage_id: number;
-    subset_filter: Record<string, unknown> | null;
-    filters: { filter_type: string; filter_config: Record<string, unknown> }[];
-  }
-): Promise<{
+export type ApplyFiltersResult = {
   new_stage_id: number;
   input_count: number;
   output_count: number;
@@ -501,7 +688,16 @@ export function applyFilters(
   per_filter_removed_count: Record<string, number>;
   affected_row_count: number;
   untouched_row_count: number;
-}> {
+};
+
+export function applyFilters(
+  taskId: string,
+  body: {
+    base_stage_id: number;
+    subset_filter: Record<string, unknown> | null;
+    filters: { filter_type: string; filter_config: Record<string, unknown> }[];
+  }
+): Promise<ApplyFiltersResult> {
   return j(
     fetch(`${API}/tasks/${encodeURIComponent(taskId)}/apply-filters`, {
       method: 'POST',
@@ -509,6 +705,92 @@ export function applyFilters(
       body: JSON.stringify(body),
     })
   );
+}
+
+/**
+ * NDJSON stream: ``progress`` lines then one ``done`` (same fields as {@link applyFilters}) or ``error``.
+ */
+export async function applyFiltersStream(
+  taskId: string,
+  body: {
+    base_stage_id: number;
+    subset_filter: Record<string, unknown> | null;
+    filters: { filter_type: string; filter_config: Record<string, unknown> }[];
+  },
+  onProgress: (pct: number, message: string) => void
+): Promise<ApplyFiltersResult> {
+  const res = await fetch(`${API}/tasks/${encodeURIComponent(taskId)}/apply-filters-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(t || `HTTP ${res.status}`);
+  }
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('No response body');
+  const dec = new TextDecoder();
+  let buf = '';
+  let donePayload: ApplyFiltersResult | null = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (value) buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop() ?? '';
+    for (const line of lines) {
+      const s = line.trim();
+      if (!s) continue;
+      let ev: Record<string, unknown>;
+      try {
+        ev = JSON.parse(s) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+      const typ = ev.type as string;
+      if (typ === 'progress') {
+        const pct = typeof ev.pct === 'number' ? ev.pct : 0;
+        const message = typeof ev.message === 'string' ? ev.message : '';
+        onProgress(pct, message);
+      } else if (typ === 'error') {
+        throw new Error(typeof ev.message === 'string' ? ev.message : 'Apply failed');
+      } else if (typ === 'done') {
+        donePayload = {
+          new_stage_id: Number(ev.new_stage_id),
+          input_count: Number(ev.input_count),
+          output_count: Number(ev.output_count),
+          removed_count: Number(ev.removed_count),
+          per_filter_removed_count: (ev.per_filter_removed_count as Record<string, number>) ?? {},
+          affected_row_count: Number(ev.affected_row_count),
+          untouched_row_count: Number(ev.untouched_row_count),
+        };
+      }
+    }
+    if (done) {
+      const tail = buf.trim();
+      if (tail) {
+        try {
+          const ev = JSON.parse(tail) as Record<string, unknown>;
+          if (ev.type === 'done' && !donePayload) {
+            donePayload = {
+              new_stage_id: Number(ev.new_stage_id),
+              input_count: Number(ev.input_count),
+              output_count: Number(ev.output_count),
+              removed_count: Number(ev.removed_count),
+              per_filter_removed_count: (ev.per_filter_removed_count as Record<string, number>) ?? {},
+              affected_row_count: Number(ev.affected_row_count),
+              untouched_row_count: Number(ev.untouched_row_count),
+            };
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+      break;
+    }
+  }
+  if (!donePayload) throw new Error('Stream ended without result');
+  return donePayload;
 }
 
 export type VersionInfo = { version: string; build_time: string };

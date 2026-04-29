@@ -7,7 +7,9 @@ to match the plan block, not stored as ``data_stage``. Heuristics; not a full op
 
 from __future__ import annotations
 
+import os
 import re
+from concurrent.futures import ProcessPoolExecutor
 from typing import Any
 
 import numpy as np
@@ -217,18 +219,26 @@ def enrich_dataframe_signatures(df: pd.DataFrame) -> pd.DataFrame:
     if n == 0:
         return out
     texts = _question_texts_column(out)
-    sigs: list[str] = []
-    fams: list[str] = []
-    paths: list[str] = []
-    focuses: list[str] = []
-    techs: list[str] = []
-    for i in range(n):
-        m = extract_from_question(texts[i])
-        sigs.append(m["signature"])
-        fams.append(m["operator_family"])
-        paths.append(m["curation_path"])
-        focuses.append(m["stage_focus"])
-        techs.append(m["technique"])
+    texts_list = texts.tolist() if hasattr(texts, "tolist") else list(texts)
+
+    maps: list[dict[str, str]]
+    cpu_n = os.cpu_count() or 2
+    if n >= 600 and cpu_n >= 2:
+        workers = min(8, max(2, cpu_n - 1))
+        chunksize = max(48, min(256, n // max(8, workers * 6)))
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as ex:
+                maps = list(ex.map(extract_from_question, texts_list, chunksize=chunksize))
+        except Exception:
+            maps = [extract_from_question(texts_list[i]) for i in range(n)]
+    else:
+        maps = [extract_from_question(texts_list[i]) for i in range(n)]
+
+    sigs = [m["signature"] for m in maps]
+    fams = [m["operator_family"] for m in maps]
+    paths = [m["curation_path"] for m in maps]
+    focuses = [m["stage_focus"] for m in maps]
+    techs = [m["technique"] for m in maps]
     out["signature"] = sigs
     out["operator_family"] = fams
     out["curation_path"] = paths

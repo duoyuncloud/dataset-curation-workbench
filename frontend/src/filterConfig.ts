@@ -2,6 +2,11 @@
  * Defaults for real question–response SFT (no correctness/runtime metadata).
  */
 export const FILTER_DEFAULTS: Record<string, Record<string, unknown>> = {
+  custom_script: {
+    code: '',
+    name: 'Custom script',
+    removal_reason_label: 'custom_script',
+  },
   remove_hacking: { level: 2, use_dataset_hacked_field: false },
   remove_duplicates: {
     mode: 'question+response',
@@ -29,10 +34,13 @@ export const FILTER_GROUPS: Record<string, string[]> = {
   cleanup: ['remove_hacking', 'remove_duplicates'],
   validity: ['format_validity', 'length_anomaly'],
   balancing: ['random_drop', 'balance_to_mean'],
+  script: ['custom_script'],
 };
 
 /** Group legend tooltip only */
 export const GROUP_HELP: Record<string, string> = {
+  script:
+    'User-defined Python on the API server: removal_mask(df, config) → bool Series (True = remove row). Requires ALLOW_CUSTOM_SCRIPT_FILTERS=1.',
   cleanup:
     'Clean the text: flag likely jailbreak / policy-evasion patterns, then remove duplicate question–answer pairs.',
   validity:
@@ -43,6 +51,7 @@ export const GROUP_HELP: Record<string, string> = {
 
 /** Short UI title per filter id */
 export const FILTER_LABELS: Record<string, string> = {
+  custom_script: 'Custom script (Python)',
   remove_hacking: 'Remove hacking',
   remove_duplicates: 'Remove duplicates',
   format_validity: 'Format validity',
@@ -53,6 +62,8 @@ export const FILTER_LABELS: Record<string, string> = {
 
 /** Tooltip only — explain what the filter does for curators */
 export const FILTER_HELP: Record<string, string> = {
+  custom_script:
+    'Provide removal_mask(df, config) returning a pandas Series aligned with df.index; True marks rows to remove. Runs only when the server sets ALLOW_CUSTOM_SCRIPT_FILTERS=1.',
   remove_hacking:
     'Uses text heuristics to catch rows that look like jailbreaks, “ignore previous rules”, hidden instructions, or other attempts to manipulate the model; severity is controlled by the level setting.',
   remove_duplicates: 'Removes exact or near-duplicate question–answer pairs so the dataset is not padded with repeats.',

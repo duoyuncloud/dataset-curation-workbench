@@ -19,7 +19,8 @@ import {
   type SubsetFilter,
   type TaskRow,
   type VersionInfo,
-  uploadJsonl,
+  uploadJsonlStream,
+  loadJsonlFromPathStream,
   truncateStagesFrom,
 } from './api';
 import { ChartsPanel } from './components/ChartsPanel';
@@ -47,6 +48,9 @@ function App() {
   const [current, setCurrent] = useState(0);
   const [detail, setDetail] = useState<StageDetail | null>(null);
   const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ pct: number; message: string } | null>(
+    null
+  );
   const [msg, setMsg] = useState<string | null>(null);
   const [subsetFilter, setSubsetFilter] = useState<SubsetFilter | null>(null);
   const [exploreSummary, setExploreSummary] = useState<Record<string, unknown> | null>(null);
@@ -232,7 +236,11 @@ function App() {
       setSubsetFilter(null);
       setDatasetVersion(0);
       setScreen('task');
-      setMsg(null);
+      if (t.task_name !== trimmed) {
+        setMsg(`Saved as “${t.task_name}” (another task already used that name).`);
+      } else {
+        setMsg(null);
+      }
     } catch (e) {
       setMsg(e instanceof Error ? e.message : 'Could not create task');
     }
@@ -248,7 +256,11 @@ function App() {
         setTaskMeta(updated);
       }
       await loadTasks();
-      setMsg(null);
+      if (updated.task_name !== trimmed) {
+        setMsg(`Renamed to “${updated.task_name}” (that name was already taken).`);
+      } else {
+        setMsg(null);
+      }
     } catch (e) {
       setMsg(e instanceof Error ? e.message : 'Rename failed');
     }
@@ -327,6 +339,40 @@ function App() {
               <UploadPanel
                 compact
                 busy={uploadBusy}
+                uploadProgress={uploadProgress}
+                onPathLoad={async (serverPath) => {
+                  setMsg(null);
+                  setSubsetFilter(null);
+                  if (hasStages) {
+                    if (
+                      !window.confirm(
+                        'Replace the current dataset? All stages will be reset and replaced with a new raw stage from this file.'
+                      )
+                    ) {
+                      return;
+                    }
+                  }
+                  setUploadBusy(true);
+                  setUploadProgress({ pct: 0, message: 'Connecting…' });
+                  try {
+                    const r = await loadJsonlFromPathStream(taskId, serverPath, (pct, message) => {
+                      setUploadProgress({ pct, message });
+                    });
+                    const s = await listStages(taskId);
+                    const meta = await getTask(taskId);
+                    setStages(s);
+                    setTaskMeta(meta);
+                    setCurrent(0);
+                    setKeptViewStageId(0);
+                    setDatasetVersion((v) => v + 1);
+                    setMsg(`Loaded ${r.stage0_count} rows from server path.`);
+                  } catch (e) {
+                    setMsg(e instanceof Error ? e.message : 'Load from path failed');
+                  } finally {
+                    setUploadBusy(false);
+                    setUploadProgress(null);
+                  }
+                }}
                 onFile={async (file) => {
                   setMsg(null);
                   setSubsetFilter(null);
@@ -340,8 +386,11 @@ function App() {
                     }
                   }
                   setUploadBusy(true);
+                  setUploadProgress({ pct: 0, message: 'Uploading…' });
                   try {
-                    const r = await uploadJsonl(taskId, file);
+                    const r = await uploadJsonlStream(taskId, file, (pct, message) => {
+                      setUploadProgress({ pct, message });
+                    });
                     const s = await listStages(taskId);
                     const meta = await getTask(taskId);
                     setStages(s);
@@ -354,6 +403,7 @@ function App() {
                     setMsg(e instanceof Error ? e.message : 'Upload failed');
                   } finally {
                     setUploadBusy(false);
+                    setUploadProgress(null);
                   }
                 }}
               />

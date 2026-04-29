@@ -15,6 +15,7 @@ from .removal_labels import (
     primary_category,
     row_matches_removal_category,
 )
+from .response_split import split_response_for_view
 
 
 def df_to_records(df: pd.DataFrame, limit: int, offset: int) -> list[dict[str, Any]]:
@@ -24,7 +25,7 @@ def df_to_records(df: pd.DataFrame, limit: int, offset: int) -> list[dict[str, A
     return json.loads(part.to_json(orient="records", default_handler=str))
 
 
-_ALLOWED_SORT = frozenset({"row", "signature", "stage_focus", "question", "response"})
+_ALLOWED_SORT = frozenset({"row", "signature", "stage_focus", "question", "thinking", "response"})
 
 
 def _row_id_tiebreak(df: pd.DataFrame) -> pd.Series:
@@ -43,7 +44,8 @@ def _row_id_tiebreak(df: pd.DataFrame) -> pd.Series:
 def sort_kept_dataframe(df: pd.DataFrame, sort: str | None, sort_dir: str) -> pd.DataFrame:
     """
     Sort full kept frame before pagination. ``sort`` must be in ``_ALLOWED_SORT`` or None.
-    For signature / stage_focus / question / response, ties break by ``_row_id`` ascending.
+    For signature / stage_focus / question / thinking / response, ties break by ``_row_id`` ascending.
+    ``thinking`` / ``response`` derive keys from the ``response`` field via ``split_response_for_view``.
     """
     if df is None or len(df) == 0:
         return df
@@ -81,8 +83,24 @@ def sort_kept_dataframe(df: pd.DataFrame, sort: str | None, sort_dir: str) -> pd
         out = df.assign(__p=col, __rid=rid).sort_values(["__p", "__rid"], ascending=[asc, True], kind=kind)
         return out.drop(columns=["__p", "__rid"])
 
+    def _resp_str(val: Any) -> str:
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return ""
+        return str(val)
+
+    if key == "thinking":
+        if "response" not in df.columns:
+            col = pd.Series("", index=df.index)
+        else:
+            col = df["response"].map(lambda v: split_response_for_view(_resp_str(v)).thinking)
+        out = df.assign(__p=col, __rid=rid).sort_values(["__p", "__rid"], ascending=[asc, True], kind=kind)
+        return out.drop(columns=["__p", "__rid"])
+
     if key == "response":
-        col = df["response"].fillna("").astype(str) if "response" in df.columns else pd.Series("", index=df.index)
+        if "response" not in df.columns:
+            col = pd.Series("", index=df.index)
+        else:
+            col = df["response"].map(lambda v: split_response_for_view(_resp_str(v)).answer)
         out = df.assign(__p=col, __rid=rid).sort_values(["__p", "__rid"], ascending=[asc, True], kind=kind)
         return out.drop(columns=["__p", "__rid"])
 

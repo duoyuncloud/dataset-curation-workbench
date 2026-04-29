@@ -11,6 +11,11 @@ import {
 } from '../api';
 import { PaginationBar } from './PaginationBar';
 import { RichDocBlock } from './RichDocBlock';
+import {
+  splitResponseForView,
+  stripSplitBoundaryTagsForView,
+  stripTableThinkingPreview,
+} from '../responseSplit';
 
 type Props = {
   taskId: string | null;
@@ -25,6 +30,8 @@ type Props = {
 };
 
 const PREVIEW_LEN = 220;
+/** Shorter preview when three text columns share the row width */
+const PREVIEW_CELL = 150;
 
 function stageLabel(id: number): string {
   return id === 0 ? 'Raw' : `S${id}`;
@@ -89,6 +96,7 @@ export function DatasetTable({
   const [focusCounts, setFocusCounts] = useState<Record<string, number>>({});
   const [draftSigs, setDraftSigs] = useState<Set<string>>(new Set());
   const [draftFocus, setDraftFocus] = useState<Set<string>>(new Set());
+  const [subsetScriptDraft, setSubsetScriptDraft] = useState('');
   const [sortKey, setSortKey] = useState<RowsSortKey>('row');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const limit = 100;
@@ -141,6 +149,10 @@ export function DatasetTable({
   useEffect(() => {
     setOffset(0);
   }, [subsetFilter, viewStageId, taskId]);
+
+  useEffect(() => {
+    setSubsetScriptDraft(subsetFilter?.subsetScript ?? '');
+  }, [subsetFilter?.subsetScript]);
 
   useEffect(() => {
     if (!taskId || !hasStages) {
@@ -214,14 +226,43 @@ export function DatasetTable({
   function mergeSubset(nextSigs: string[], nextFocus: string[]) {
     const s = [...nextSigs].sort();
     const f = [...nextFocus].sort();
-    if (s.length === 0 && f.length === 0) {
+    const scr = subsetFilter?.subsetScript?.trim();
+    const scfg = subsetFilter?.subsetScriptConfig;
+    if (s.length === 0 && f.length === 0 && !scr) {
       onSubsetFilter(null);
       return;
     }
+    const next: SubsetFilter = { signatures: s, stageFocus: f };
+    if (scr) {
+      next.subsetScript = subsetFilter!.subsetScript;
+      if (scfg) next.subsetScriptConfig = scfg;
+    }
+    onSubsetFilter(next);
+  }
+
+  function applySubsetScriptDraft() {
+    const t = subsetScriptDraft.trim();
+    const sigs = subsetFilter?.signatures ?? [];
+    const sf = subsetFilter?.stageFocus ?? [];
+    if (!t) {
+      if (sigs.length === 0 && sf.length === 0) onSubsetFilter(null);
+      else onSubsetFilter({ signatures: sigs, stageFocus: sf });
+      return;
+    }
     onSubsetFilter({
-      signatures: s,
-      stageFocus: f,
+      signatures: sigs,
+      stageFocus: sf,
+      subsetScript: subsetScriptDraft,
+      subsetScriptConfig: subsetFilter?.subsetScriptConfig ?? {},
     });
+  }
+
+  function clearSubsetScriptOnly() {
+    setSubsetScriptDraft('');
+    const sigs = subsetFilter?.signatures ?? [];
+    const sf = subsetFilter?.stageFocus ?? [];
+    if (sigs.length === 0 && sf.length === 0) onSubsetFilter(null);
+    else onSubsetFilter({ signatures: sigs, stageFocus: sf });
   }
 
   function applySignatureDraft() {
@@ -273,8 +314,9 @@ export function DatasetTable({
           </label>
         </div>
         <span className="muted">
-          Columns use <code>question</code> and <code>response</code>; <code>signature</code> and{' '}
-          <code>stage_focus</code> (active step title from the prompt) are derived for subsetting. Click a column
+          The <code>response</code> field is shown as <strong>Thinking</strong> + <strong>Response</strong> (split
+          like in View full). <code>signature</code> and <code>stage_focus</code> are derived for subsetting. Click
+          a column
           title to sort (server-side); same column again toggles direction. Tiebreaker uses <code>_row_id</code>.
         </span>
       </div>
@@ -324,6 +366,34 @@ export function DatasetTable({
               </span>
             )}
           </div>
+
+          <details className="subset-script-details">
+            <summary className="subset-script-summary">Custom subset (Python on server)</summary>
+            <p className="muted small">
+              Define <code>subset_mask(df, config)</code> → boolean Series aligned with <code>df.index</code>;{' '}
+              <code>True</code> = row is <strong>in</strong> the subset (filters apply only here). Requires{' '}
+              <code>ALLOW_CUSTOM_SCRIPT_FILTERS=1</code>. Combine with signature / stage chips above (AND).
+            </p>
+            <textarea
+              className="subset-script-textarea"
+              rows={8}
+              spellCheck={false}
+              placeholder={`import pandas as pd\n\ndef subset_mask(df: pd.DataFrame, config: dict) -> pd.Series:\n    return df[\"signature\"].astype(str).str.contains(\"Conv\", na=False)`}
+              value={subsetScriptDraft}
+              onChange={(e) => setSubsetScriptDraft(e.target.value)}
+              disabled={!taskId}
+            />
+            <div className="subset-script-actions">
+              <button type="button" className="btn small" disabled={!taskId} onClick={() => applySubsetScriptDraft()}>
+                Apply subset script
+              </button>
+              {(subsetFilter?.subsetScript?.trim() ?? '') !== '' && (
+                <button type="button" className="btn small light" onClick={() => clearSubsetScriptOnly()}>
+                  Clear script only
+                </button>
+              )}
+            </div>
+          </details>
 
           {sigOpen && distKeys.length > 0 && (
             <div className="table-inline-filter">
@@ -467,12 +537,24 @@ export function DatasetTable({
                     <button
                       type="button"
                       className="th-sort-btn"
+                      onClick={() => onSortHeaderClick('thinking')}
+                      aria-sort={
+                        sortKey === 'thinking' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'
+                      }
+                    >
+                      Thinking{sortIndicator('thinking')}
+                    </button>
+                  </th>
+                  <th className="table-sortable">
+                    <button
+                      type="button"
+                      className="th-sort-btn"
                       onClick={() => onSortHeaderClick('response')}
                       aria-sort={
                         sortKey === 'response' ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'
                       }
                     >
-                      Answer{sortIndicator('response')}
+                      Response{sortIndicator('response')}
                     </button>
                   </th>
                   <th />
@@ -481,9 +563,12 @@ export function DatasetTable({
               <tbody>
                 {rows.map((r, i) => {
                   const q = questionText(r);
-                  const a = answerText(r);
+                  const sp = splitResponseForView(answerText(r));
                   const qPrev = q.length > PREVIEW_LEN ? `${q.slice(0, PREVIEW_LEN)}…` : q;
-                  const aPrev = a.length > PREVIEW_LEN ? `${a.slice(0, PREVIEW_LEN)}…` : a;
+                  const th = stripTableThinkingPreview(sp.thinking);
+                  const ans = sp.answer;
+                  const tPrev = th.length > PREVIEW_CELL ? `${th.slice(0, PREVIEW_CELL)}…` : th;
+                  const aPrev = ans.length > PREVIEW_CELL ? `${ans.slice(0, PREVIEW_CELL)}…` : ans;
                   return (
                     <tr key={rowId(r, i, offset)}>
                       <td className="nowrap">{rowId(r, i, offset)}</td>
@@ -495,6 +580,9 @@ export function DatasetTable({
                       </td>
                       <td>
                         <span className="cell-preview">{qPrev || '—'}</span>
+                      </td>
+                      <td>
+                        <span className="cell-preview cell-preview-muted">{tPrev || '—'}</span>
                       </td>
                       <td>
                         <span className="cell-preview">{aPrev || '—'}</span>
@@ -572,11 +660,24 @@ function KeptFullModal({
           {(() => {
             const ab = textBlock(a);
             if (!ab.has) return null;
+            const sp = splitResponseForView(ab.text);
+            const thinkDoc = stripSplitBoundaryTagsForView(sp.thinking);
+            const answerDoc = stripSplitBoundaryTagsForView(sp.answer);
             return (
-              <section className="modal-block modal-qa-card">
-                <h4 className="modal-h4">Answer (response)</h4>
-                <RichDocBlock source={ab.text} />
-              </section>
+              <>
+                {thinkDoc.trim() ? (
+                  <section className="modal-block modal-thinking-card">
+                    <h4 className="modal-h4">Thinking</h4>
+                    <RichDocBlock source={thinkDoc} />
+                  </section>
+                ) : null}
+                {answerDoc.trim() ? (
+                  <section className="modal-block modal-answer-card">
+                    <h4 className="modal-h4">Answer</h4>
+                    <RichDocBlock source={answerDoc} />
+                  </section>
+                ) : null}
+              </>
             );
           })()}
           {meta.map(({ k, label }) => {

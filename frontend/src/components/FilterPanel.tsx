@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  applyFilters,
+  applyFiltersStream,
   listFiltersGrouped,
   subsetFilterActive,
   subsetFilterToApiBody,
@@ -14,13 +14,15 @@ import {
   PRESET_ORDER,
   PRESETS,
 } from '../filterConfig';
+import { LinearProgress } from './LinearProgress';
 
-const GROUP_ORDER = ['cleanup', 'validity', 'balancing'] as const;
+const GROUP_ORDER = ['cleanup', 'validity', 'balancing', 'script'] as const;
 
 const GROUP_LABELS: Record<(typeof GROUP_ORDER)[number], string> = {
   cleanup: 'Cleanup',
   validity: 'Validity',
   balancing: 'Balancing',
+  script: 'Script',
 };
 
 type Props = {
@@ -53,6 +55,7 @@ export function FilterPanel({
   /** Per-filter config merged over FILTER_DEFAULTS when applying */
   const [configs, setConfigs] = useState<Record<string, Record<string, unknown>>>({});
   const [busy, setBusy] = useState(false);
+  const [applyProgress, setApplyProgress] = useState<{ pct: number; message: string } | null>(null);
 
   const load = useCallback(() => {
     listFiltersGrouped()
@@ -174,19 +177,27 @@ export function FilterPanel({
       } as Record<string, unknown>,
     }));
     setBusy(true);
+    setApplyProgress({ pct: 0, message: 'Connecting…' });
     try {
-      await applyFilters(taskId, {
-        base_stage_id: fromStage,
-        subset_filter: subsetFilterToApiBody(
-          subsetFilter ?? { signatures: [], stageFocus: [] }
-        ),
-        filters: batch,
-      });
+      await applyFiltersStream(
+        taskId,
+        {
+          base_stage_id: fromStage,
+          subset_filter: subsetFilterToApiBody(
+            subsetFilter ?? { signatures: [], stageFocus: [] }
+          ),
+          filters: batch,
+        },
+        (pct, message) => {
+          setApplyProgress({ pct, message });
+        }
+      );
       onApplied();
     } catch (e) {
       onError(e instanceof Error ? e.message : 'Apply failed');
     } finally {
       setBusy(false);
+      setApplyProgress(null);
     }
   }
 
@@ -381,6 +392,28 @@ export function FilterPanel({
                         </label>
                       </div>
                     )}
+                    {ft === 'custom_script' && selected.custom_script && (
+                      <div className="filter-nested-config filter-script-block">
+                        <p className="muted small">
+                          Define <code>removal_mask(df, config)</code> → pandas Series[bool] (same index as{' '}
+                          <code>df</code>); <code>True</code> = remove row. Server needs{' '}
+                          <code>ALLOW_CUSTOM_SCRIPT_FILTERS=1</code>.
+                        </p>
+                        <label className="filter-script-label">
+                          <span>Python code</span>
+                          <textarea
+                            className="filter-script-textarea"
+                            rows={14}
+                            spellCheck={false}
+                            value={String(configs.custom_script?.code ?? '')}
+                            onChange={(e) =>
+                              patchConfig('custom_script', { code: e.target.value })
+                            }
+                            disabled={!canApply}
+                          />
+                        </label>
+                      </div>
+                    )}
                   </div>
                 ))}
               </fieldset>
@@ -395,6 +428,15 @@ export function FilterPanel({
           >
             {busy ? 'Applying…' : 'Apply selected filters'}
           </button>
+          {busy ? (
+            <div className="filter-apply-progress">
+              {applyProgress ? (
+                <LinearProgress value={applyProgress.pct} label={applyProgress.message} />
+              ) : (
+                <LinearProgress indeterminate label="Starting…" />
+              )}
+            </div>
+          ) : null}
         </>
       )}
     </>
